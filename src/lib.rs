@@ -42,6 +42,7 @@ pub mod pallet {
         pallet_prelude::*,
     };
     use scale_info::prelude::vec;
+    use frame_support::traits::BuildGenesisConfig;
 
     #[pallet::pallet]
     pub struct Pallet<T>(_);
@@ -51,6 +52,16 @@ pub mod pallet {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
         type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
     }
+
+    /// Oracle configuration
+    #[pallet::storage]
+    pub type MinNodesForTrustedAggregation<T> = StorageValue<_, u32>;
+
+    #[pallet::storage]
+    pub type FeedAge<T> = StorageValue<_, u16>;
+
+    #[pallet::storage]
+    pub type OutliersRange<T> = StorageValue<_, u32>;
 
     /// NodesPrices store latest price for each node
     /// about Identity hasher https://docs.substrate.io/build/runtime-storage/#common-substrate-hashers
@@ -67,6 +78,38 @@ pub mod pallet {
     #[pallet::storage]
     pub type Price<T> = StorageValue<_, u32>;
 
+    /// oracle genesis config definition and associated macros
+    // see https://docs.substrate.io/reference/how-to-guides/basics/configure-genesis-state/
+    #[pallet::genesis_config]
+    pub struct GenesisConfig<T: Config> {
+        pub min_nodes_for_trusted_aggregation: u32,
+        pub feed_age: u16,
+        pub outliers_range: u32,
+        // Ties `T` to `GenesisConfig` because is needed for `impl<T: Config> BuildGenesisConfig ...`
+        _marker: PhantomData<T>,
+    }
+
+    impl<T: Config> Default for GenesisConfig<T> {
+        fn default() -> Self {
+            Self {
+                min_nodes_for_trusted_aggregation: Default::default(),
+                feed_age: Default::default(),
+                outliers_range: Default::default(),
+                _marker: Default::default(),
+            }
+        }
+    }
+
+    #[pallet::genesis_build]
+    impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
+        fn build(&self) {
+            <MinNodesForTrustedAggregation<T>>::put(&self.min_nodes_for_trusted_aggregation);
+            <FeedAge<T>>::put(&self.feed_age);
+            <OutliersRange<T>>::put(&self.outliers_range);
+        }
+    }
+
+    /// pallet events
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -77,6 +120,7 @@ pub mod pallet {
         },
     }
 
+    /// pallet calls
     #[pallet::call]
     impl<T: Config> Pallet<T> {
         #[pallet::call_index(0)]
@@ -94,6 +138,7 @@ pub mod pallet {
         }
     }
 
+    /// pallet hooks
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
         // Offchain worker that triggers the extrinsic submitting a price to the
