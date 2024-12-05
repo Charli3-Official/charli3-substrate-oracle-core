@@ -6,6 +6,9 @@ use sp_core::crypto::KeyTypeId;
 
 pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"orac");
 
+mod price_providers;
+use price_providers::{PriceProvider, CryptoCompareProvider};
+
 pub mod crypto {
     use super::KEY_TYPE;
     use sp_core::sr25519::Signature as Sr25519Signature;
@@ -37,12 +40,14 @@ pub mod crypto {
 pub mod pallet {
     use super::*;
     use frame_support::pallet_prelude::*;
+    use frame_support::traits::BuildGenesisConfig;
     use frame_system::{
         offchain::{AppCrypto, CreateSignedTransaction, SendSignedTransaction, Signer},
         pallet_prelude::*,
     };
     use scale_info::prelude::vec;
-    use frame_support::traits::BuildGenesisConfig;
+    use sp_runtime::offchain::{http};
+    use sp_runtime::sp_std::str;
 
     #[pallet::pallet]
     pub struct Pallet<T>(_);
@@ -138,6 +143,13 @@ pub mod pallet {
         }
     }
 
+    /// pallet auxiliary methods
+    impl<T: Config> Pallet<T> {
+        pub fn fetch_price() -> Result<u32, http::Error> {
+            CryptoCompareProvider::fetch_price()
+        }
+    }
+
     /// pallet hooks
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
@@ -151,14 +163,31 @@ pub mod pallet {
                     let signer = Signer::<T, T::AuthorityId>::all_accounts()
                         .with_filter(vec![signer_account.clone().public]);
                     if signer.can_sign() {
-                        let result = signer.send_single_signed_transaction(
-                            &signer_account,
-                            Call::store_price { price: 127 },
-                        );
-                        if result.is_some_and(|res| res.is_ok()) {
-                            log::info!("[{:?}]: submit transaction success.", signer_account.id)
-                        } else {
-                            log::error!("[{:?}]: submit transaction failure.", signer_account.id)
+                        match Self::fetch_price() {
+                            Ok(price) => {
+                                let result = signer.send_single_signed_transaction(
+                                    &signer_account,
+                                    Call::store_price { price },
+                                );
+                                if result.is_some_and(|res| res.is_ok()) {
+                                    log::info!(
+                                        "[{:?}]: submit transaction success.",
+                                        signer_account.id
+                                    )
+                                } else {
+                                    log::error!(
+                                        "[{:?}]: submit transaction failure.",
+                                        signer_account.id
+                                    )
+                                }
+                            }
+                            Err(e) => {
+                                log::error!(
+                                    "[{:?}]: failed to fetch price: {:?}",
+                                    signer_account.id,
+                                    e
+                                );
+                            }
                         }
                     }
                 }
