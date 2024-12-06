@@ -200,16 +200,18 @@ pub mod pallet {
             // Calculate and store median price
             // let feed_age = FeedAge::<T>::get(); // config checker that returns these values
             log::info!("Aggregating median price for block {:?}", n);
-            let feed_age: u32 = 2;
+            let feed_age: u32 = 15;
             let min_nodes_for_trusted_aggregation  = 2;
             let mut count : u32 = 0;
             let prices = NodesPrices::<T>::iter_values()
-                .filter_map(|(p, a)| if a <= feed_age.into() {
+                .by_ref()
+                .filter_map(|(p, a)| {
+                    if (n - a) <= feed_age.into() {
                         count += 1;
                         Some(p)
                     } else {
                         None
-                    }
+                    }}
                 )
                 .collect();
             if min_nodes_for_trusted_aggregation <= count {
