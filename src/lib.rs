@@ -2,6 +2,9 @@
 
 pub use pallet::*;
 
+use frame_support::pallet_prelude::{BoundedVec, ConstU32};
+use frame_system::pallet_prelude::BlockNumberFor;
+use scale_info::prelude::vec::Vec;
 use sp_core::crypto::KeyTypeId;
 
 pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"orac");
@@ -39,11 +42,17 @@ pub mod crypto {
 #[frame_support::pallet]
 pub mod pallet {
     use super::*;
+    use codec::{Decode, Encode, MaxEncodedLen};
     use frame_support::pallet_prelude::*;
+    use frame_support::traits::BuildGenesisConfig;
     use frame_support::traits::BuildGenesisConfig;
     use frame_system::{
         offchain::{AppCrypto, CreateSignedTransaction, SendSignedTransaction, Signer},
         pallet_prelude::*,
+    };
+    use scale_info::{
+        prelude::{fmt, vec},
+        TypeInfo,
     };
     use scale_info::prelude::vec;
     use sp_runtime::offchain::{http};
@@ -53,7 +62,9 @@ pub mod pallet {
     pub struct Pallet<T>(_);
 
     #[pallet::config]
-    pub trait Config: frame_system::Config + CreateSignedTransaction<Call<Self>> {
+    pub trait Config:
+        frame_system::Config + CreateSignedTransaction<Call<Self>> + fmt::Debug
+    {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
         type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
     }
@@ -79,9 +90,10 @@ pub mod pallet {
     >;
 
     /// price after nodes "consensus"
-    /// first (naive) consensus version: average of all nodes prices
+    /// The first value is the median price
+    /// The second value is the age of the median price
     #[pallet::storage]
-    pub type Price<T> = StorageValue<_, u32>;
+    pub type Price<T> = StorageValue<_, (u32, BlockNumberFor<T>)>;
 
     /// oracle genesis config definition and associated macros
     // see https://docs.substrate.io/reference/how-to-guides/basics/configure-genesis-state/
@@ -114,6 +126,24 @@ pub mod pallet {
         }
     }
 
+    // Error messages
+    #[derive(Clone, PartialEq, Encode, Decode, MaxEncodedLen, TypeInfo, Debug)]
+    pub enum ErrorMessage {
+        NotEnoughNodes,
+        NoPreviousMedian,
+    }
+
+    // Aggregation status flag
+    // Used to include more information about an uncommon aggregation if it occurs.
+    #[derive(Clone, PartialEq, Encode, Decode, MaxEncodedLen, TypeInfo, Debug)]
+    pub enum Flag<T: Config> {
+        Ok,
+        Error {
+            message: ErrorMessage,
+            price_age: BlockNumberFor<T>,
+        },
+    }
+
     /// pallet events
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -122,6 +152,12 @@ pub mod pallet {
             price: u32,
             who: T::AccountId,
             when: BlockNumberFor<T>,
+        },
+        AggregationStatus {
+            median: u32,
+            block: BlockNumberFor<T>,
+            flag: Flag<T>,
+            non_outliers: Vec<u32>,
         },
     }
 
@@ -197,12 +233,10 @@ pub mod pallet {
         }
 
         fn on_finalize(n: BlockNumberFor<T>) {
-            // Calculate and store median price
-            // let feed_age = FeedAge::<T>::get(); // config checker that returns these values
             log::info!("Aggregating median price for block {:?}", n);
             let feed_age: u32 = 15;
-            let min_nodes_for_trusted_aggregation  = 2;
-            let mut count : u32 = 0;
+            let min_nodes_for_trusted_aggregation = 2;
+            let mut count: u32 = 0;
             let prices = NodesPrices::<T>::iter_values()
                 .by_ref()
                 .filter_map(|(p, a)| {
@@ -211,25 +245,77 @@ pub mod pallet {
                         Some(p)
                     } else {
                         None
-                    }}
-                )
+                    }
+                })
                 .collect();
-            if min_nodes_for_trusted_aggregation <= count {
-                log::info!("{:?} nodes have submitted prices. Calculating median..", count);
-                let mut sorted_prices = BoundedVec::<u32, ConstU32<32>>::truncate_from(prices);
-                sorted_prices.sort();
-                let median;
-                let length = sorted_prices.len();
-                if count % 2 == 0 {
-                    median = sorted_prices[(length - 1) /2];
+            let (median, age, flag): (u32, BlockNumberFor<T>, Flag<T>) =
+                if min_nodes_for_trusted_aggregation <= count {
+                    log::info!(
+                        "{:?} nodes have submitted prices. Calculating median..",
+                        count
+                    );
+                    Self::calculate_median(prices)
                 } else {
-                    median = (sorted_prices[(length - 1)/2] + sorted_prices[length/2]) / 2;
-                }
-                Price::<T>::put(median);
-            } else {
-                log::error!("Not enough nodes for trusted aggregation. Reusing median ...");
-            }
+                    log::error!("Not enough nodes for trusted aggregation. Reusing median ...");
+                    Self::reuse_previous_median()
+                };
+            Price::<T>::put((median, age));
+            log::info!(
+                "Median price for block {:?} is {:?} with status: {:?}",
+                n,
+                median,
+                flag
+            );
+            Self::deposit_event(Event::AggregationStatus {
+                median,
+                block: n,
+                flag,
+                non_outliers: vec![],
+            })
+        }
+    }
+}
 
+impl<T: Config> Pallet<T> {
+    fn calculate_median(prices: Vec<u32>) -> (u32, BlockNumberFor<T>, Flag<T>) {
+        let mut sorted_prices = BoundedVec::<u32, ConstU32<32>>::truncate_from(prices);
+        sorted_prices.sort();
+
+        let length = sorted_prices.len();
+        let zero: BlockNumberFor<T> = (0 as u32).into();
+        let median: u32;
+
+        if length % 2 == 0 {
+            median = sorted_prices[(length - 1) / 2];
+        } else {
+            median = (sorted_prices[(length - 1) / 2] + sorted_prices[length / 2]) / 2;
+        }
+
+        (median, zero, Flag::<T>::Ok)
+    }
+
+    fn reuse_previous_median() -> (u32, BlockNumberFor<T>, Flag<T>) {
+        if let Some((median, age)) = Price::<T>::get() {
+            let one: u32 = 1;
+            (
+                median,
+                age + one.into(),
+                Flag::<T>::Error {
+                    message: ErrorMessage::NotEnoughNodes,
+                    price_age: age + one.into(),
+                },
+            )
+        } else {
+            log::error!("Error: no median to reuse.");
+            let zero: BlockNumberFor<T> = (0 as u32).into();
+            (
+                0,
+                zero,
+                Flag::<T>::Error {
+                    message: ErrorMessage::NoPreviousMedian,
+                    price_age: zero,
+                },
+            )
         }
     }
 }
