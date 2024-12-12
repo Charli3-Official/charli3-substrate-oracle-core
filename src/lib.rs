@@ -137,7 +137,7 @@ pub mod pallet {
 
     // Information about whether the aggregation happened or not
     #[derive(Clone, PartialEq, Encode, Decode, TypeInfo, Debug)]
-    pub enum Status {
+    pub enum AggregationStatus {
         AggregationPerformed {
             non_outliers: u16,
             non_outlier_prices: Vec<u32>,
@@ -164,13 +164,13 @@ pub mod pallet {
             who: T::AccountId,
             when: BlockNumberFor<T>,
         },
-        AggregationStatus {
+        Status {
+            median_price: u32,
             flag: Flag,
             participating_nodes: u32,
-            median_price: u32,
             age: u16,
             block: BlockNumberFor<T>,
-            status: Status,
+            status: AggregationStatus,
         },
     }
 
@@ -266,7 +266,7 @@ pub mod pallet {
                         }
                     })
                     .collect();
-                let (median_price, age, flag, status): (u32, u16, Flag, crate::Status) =
+                let (median_price, age, flag, status): (u32, u16, Flag, crate::AggregationStatus) =
                     if min_nodes_for_trusted_aggregation <= participating_nodes {
                         log::info!(
                             "{:?} nodes submitted a price. Aggregating median price ...",
@@ -284,10 +284,10 @@ pub mod pallet {
                     median_price,
                     flag
                 );
-                Self::deposit_event(Event::AggregationStatus {
+                Self::deposit_event(Event::Status {
+                    median_price,
                     flag,
                     participating_nodes,
-                    median_price,
                     age,
                     block: n,
                     status,
@@ -304,7 +304,7 @@ impl<T: Config> Pallet<T> {
         prices: Vec<u32>,
         outliers_range: u32,
         divergence_percentage: u32,
-    ) -> (u32, u16, Flag, crate::Status) {
+    ) -> (u32, u16, Flag, crate::AggregationStatus) {
         let mut prices = BoundedVec::<u32, ConstU32<32>>::truncate_from(prices);
         prices.sort();
         let sorted_prices = prices.to_vec();
@@ -321,7 +321,7 @@ impl<T: Config> Pallet<T> {
             median,
             0,
             Flag::Ok,
-            Status::AggregationPerformed {
+            AggregationStatus::AggregationPerformed {
                 non_outliers: non_outlier_prices.len() as u16,
                 non_outlier_prices,
                 outliers: outlier_prices.len() as u16,
@@ -330,13 +330,13 @@ impl<T: Config> Pallet<T> {
         )
     }
 
-    fn reuse_previous_median() -> (u32, u16, Flag, crate::Status) {
+    fn reuse_previous_median() -> (u32, u16, Flag, crate::AggregationStatus) {
         if let Some((median, age)) = Price::<T>::get() {
             (
                 median,
                 age + 1,
                 Flag::NotEnoughNodes,
-                Status::AggregationNotPerformed,
+                AggregationStatus::AggregationNotPerformed,
             )
         } else {
             log::error!("Error: no median to reuse.");
@@ -344,7 +344,7 @@ impl<T: Config> Pallet<T> {
                 0,
                 0,
                 Flag::NoPreviousMedian,
-                Status::AggregationNotPerformed,
+                AggregationStatus::AggregationNotPerformed,
             )
         }
     }
