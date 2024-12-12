@@ -10,7 +10,7 @@ use sp_core::crypto::KeyTypeId;
 pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"orac");
 
 mod price_providers;
-use price_providers::{PriceProvider, CryptoCompareProvider};
+use price_providers::{CryptoCompareProvider, PriceProvider};
 
 pub const SCALING_FACTOR: f64 = 10000.0;
 
@@ -52,14 +52,14 @@ pub mod pallet {
         offchain::{AppCrypto, CreateSignedTransaction, SendSignedTransaction, Signer},
         pallet_prelude::*,
     };
+    use scale_info::prelude::vec;
+    use scale_info::{prelude::fmt, TypeInfo};
     use scale_info::{
         prelude::{fmt, vec},
         TypeInfo,
     };
-    use scale_info::prelude::vec;
-    use sp_runtime::offchain::{http};
+    use sp_runtime::offchain::http;
     use sp_runtime::sp_std::str;
-    use scale_info::{prelude::fmt, TypeInfo};
 
     #[pallet::pallet]
     pub struct Pallet<T>(_);
