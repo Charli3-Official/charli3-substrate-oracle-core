@@ -45,21 +45,13 @@ pub mod crypto {
 pub mod pallet {
     use super::*;
     use codec::{Decode, Encode, MaxEncodedLen};
-    use frame_support::pallet_prelude::*;
-    use frame_support::traits::BuildGenesisConfig;
-    use frame_support::traits::BuildGenesisConfig;
+    use frame_support::{pallet_prelude::*, traits::BuildGenesisConfig};
     use frame_system::{
         offchain::{AppCrypto, CreateSignedTransaction, SendSignedTransaction, Signer},
         pallet_prelude::*,
     };
-    use scale_info::prelude::vec;
     use scale_info::{prelude::fmt, TypeInfo};
-    use scale_info::{
-        prelude::{fmt, vec},
-        TypeInfo,
-    };
-    use sp_runtime::offchain::http;
-    use sp_runtime::sp_std::str;
+    use sp_runtime::{offchain::http, sp_std::str};
 
     #[pallet::pallet]
     pub struct Pallet<T>(_);
