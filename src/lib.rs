@@ -76,7 +76,7 @@ pub mod pallet {
 
     #[pallet::storage]
     pub type DivergencePercentage<T> = StorageValue<_, u32>;
-    
+
     #[pallet::storage]
     pub type SignatureStorage<T> = StorageValue<_, [u8; 64]>;
 
@@ -212,7 +212,7 @@ pub mod pallet {
                             log::info!("Account signed: {:?}", signed_message.0.id);
                             // SignatureStorage::<T>::put(signed_message.1);
                             // log::info!("Stored signed message");
-                            log::debug!("Signed message: {0:#?}", signed_message.1);
+                            log::info!("Signed message: {0:#?}", signed_message.1);
                         } else {
                             log::error!("Couldn't retrieve signature");
                         }
