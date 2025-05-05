@@ -52,6 +52,8 @@ pub mod pallet {
     };
     use scale_info::{prelude::fmt, TypeInfo};
     use sp_runtime::{offchain::http, sp_std::str};
+    use hex::ToHex;
+    use sp_std::boxed::Box;
 
     #[pallet::pallet]
     pub struct Pallet<T>(_);
@@ -212,7 +214,9 @@ pub mod pallet {
                             log::info!("Account signed: {:?}", signed_message.0.id);
                             // SignatureStorage::<T>::put(signed_message.1);
                             // log::info!("Stored signed message");
-                            log::info!("Signed message: {0:#?}", signed_message.1);
+
+                            let hex_signature: Box<str> = signed_message.1.encode().encode_hex();
+                            log::info!("Signed message: {}", hex_signature);
                         } else {
                             log::error!("Couldn't retrieve signature");
                         }
