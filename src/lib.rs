@@ -6,6 +6,7 @@ extern crate alloc;
 
 use frame_support::pallet_prelude::{BoundedVec, ConstU32};
 use frame_system::pallet_prelude::BlockNumberFor;
+use pallet_timestamp::{self as timestamp};
 use scale_info::prelude::{vec, vec::Vec};
 use sp_core::crypto::KeyTypeId;
 
@@ -53,7 +54,7 @@ pub mod pallet {
         pallet_prelude::*,
     };
     use scale_info::{prelude::fmt, TypeInfo};
-    use sp_runtime::{offchain::http, sp_std::str};
+    use sp_runtime::{offchain::http, sp_std::str, SaturatedConversion};
     use hex::ToHex;
     use sp_std::boxed::Box;
     use sp_core::hashing::blake2_256;
@@ -65,7 +66,7 @@ pub mod pallet {
 
     #[pallet::config]
     pub trait Config:
-        frame_system::Config + CreateSignedTransaction<Call<Self>> + fmt::Debug
+        frame_system::Config + timestamp::Config + CreateSignedTransaction<Call<Self>> + fmt::Debug
     {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
         type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
@@ -256,11 +257,15 @@ pub mod pallet {
                     let signer = Signer::<T, T::AuthorityId>::all_accounts()
                         .with_filter(vec![signer_account.clone().public]);
                     if let Some((prev_median, prev_age)) = Price::<T>::get() {
+                        // Get timestamp in milliseconds
+                        let now_millis = timestamp::Pallet::<T>::get().saturated_into::<u64>();
+
                         if prev_age == 0 {
                             let msg = OracleMessage {
                                 median_price: prev_median,
-                                timestamp: 1746529250,
+                                timestamp: now_millis,
                             };
+                            log::info!("Prepared Message: {:?}", msg);
                             let cbor_hex: Box<str> = msg.to_cardano_cbor().encode_hex();
                             log::info!("Message cbor: {}", cbor_hex);
                         }
