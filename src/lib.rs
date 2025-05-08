@@ -2,8 +2,6 @@
 
 pub use pallet::*;
 
-extern crate alloc;
-
 use frame_support::pallet_prelude::{BoundedVec, ConstU32};
 use frame_system::pallet_prelude::BlockNumberFor;
 use pallet_timestamp::{self as timestamp};
@@ -47,10 +45,10 @@ pub mod crypto {
 #[frame_support::pallet]
 pub mod pallet {
     use super::*;
-    use codec::{Decode, Encode, MaxEncodedLen, EncodeLike};
+    use codec::{Decode, Encode, MaxEncodedLen};
     use frame_support::{pallet_prelude::*, traits::BuildGenesisConfig};
     use frame_system::{
-        offchain::{AppCrypto, CreateSignedTransaction, SendSignedTransaction, Signer, SignMessage, SigningTypes},
+        offchain::{AppCrypto, CreateSignedTransaction, SendSignedTransaction, Signer, SignMessage},
         pallet_prelude::*,
     };
     use scale_info::{prelude::fmt, TypeInfo};
@@ -58,8 +56,8 @@ pub mod pallet {
     use hex::ToHex;
     use sp_std::boxed::Box;
     use sp_core::hashing::blake2_256;
-    use minicbor::{encode::{Write, Encoder}};
-    use alloc::vec::Vec as AllocVec;
+    use minicbor::encode::Encoder;
+    use codec::alloc::vec::Vec as AllocVec;
 
     #[pallet::pallet]
     pub struct Pallet<T>(_);
@@ -276,7 +274,7 @@ pub mod pallet {
                                 let msg = OracleMessage {
                                     median_price: prev_median,
                                     timestamp: now_millis,
-                                    rewards: alloc::vec![account_vec],
+                                    rewards: codec::alloc::vec![account_vec],
                                 };
                                 log::info!("Prepared Message: {:?}", msg);
                                 let cbor_hex: Box<str> = msg.to_cardano_cbor().encode_hex();
@@ -326,7 +324,7 @@ pub mod pallet {
                     }
                 }
                 Some(_accounts) => log::error!("More than one account. Expected only one"),
-                None => log::error!("No account available for oracle"),
+                _none => log::error!("No account available for oracle"),
             }
         }
 
