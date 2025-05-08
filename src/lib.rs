@@ -380,42 +380,20 @@ pub mod pallet {
             }
         }
 
-        // fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
-        //     log::info!("Starting block...");
-        //     log::info!("Signing message");
-        //     let mut acc_list = Signer::<T, T::AuthorityId>::keystore_accounts();
-        //     match acc_list.next() {
-        //         Some(signer_account) if acc_list.next().is_none() => {
-        //             let signer = Signer::<T, T::AuthorityId>::all_accounts()
-        //                 .with_filter(vec![signer_account.clone().public]);
-        //             if signer.can_sign() {
-        //                 let signed_message = signer.sign_message(b"something");
-        //                 log::info!("Signed: {:?}", signed_message);
-        //             } else {
-        //                 log::error!("Couldn't sign");
-        //             }
-        //         },
-        //         Some(_accounts) => log::error!("More than one account. Expected only one"),
-        //         None => {
-        //             log::error!("Couldn't fetch account");
-        //         }
-        //     }
-        //     Weight::zero()
-        // }
     }
 }
 
 impl<T: Config> Pallet<T> {
     fn aggregate(
-        add_and_prices: Vec<(T::AccountId, u32)>,
+        acc_and_prices: Vec<(T::AccountId, u32)>,
         outliers_range: u32,
         divergence_percentage: u32,
     ) -> (u32, u16, Flag, crate::AggregationStatus<T>) {
-        let mut add_and_prices = BoundedVec::<(T::AccountId, u32), ConstU32<32>>::truncate_from(add_and_prices);
-        add_and_prices.sort_by_key(|k| k.1);
-        let sorted_add_prices = add_and_prices.to_vec();
-        let length: usize = add_and_prices.len();
-        let (_addresses, sorted_prices): (Vec<T::AccountId>, Vec<u32>) = sorted_add_prices.clone().into_iter().unzip();
+        let mut acc_and_prices = BoundedVec::<(T::AccountId, u32), ConstU32<32>>::truncate_from(acc_and_prices);
+        acc_and_prices.sort_by_key(|k| k.1);
+        let sorted_acc_and_prices = acc_and_prices.to_vec();
+        let length: usize = acc_and_prices.len();
+        let (_addresses, sorted_prices): (Vec<T::AccountId>, Vec<u32>) = sorted_acc_and_prices.clone().into_iter().unzip();
         let median = Self::calculate_median(sorted_prices.clone(), length);
         let (non_outlier_prices, outlier_prices) = Self::filter_outliers(
             sorted_prices,
@@ -424,20 +402,16 @@ impl<T: Config> Pallet<T> {
             outliers_range,
             divergence_percentage,
         );
-        let mut non_outliers_copy = non_outlier_prices.clone();
-        let rewards: Vec<T::AccountId> = sorted_add_prices.into_iter().scan(
-            non_outliers_copy.remove(0),
-            |compare, (add, price)| {
-                while price > *compare {
-                    *compare = non_outliers_copy.remove(0);
-                }
-                if price == *compare {
-                    Some(Some(add))
+        let rewards: Vec<T::AccountId> = sorted_acc_and_prices
+            .into_iter()
+            .filter_map(|(account, price)| {
+                if non_outlier_prices.contains(&price) {
+                    Some(account)
                 } else {
-                    Some(None)
+                    None
                 }
-            }
-        ).flatten().collect();
+            })
+            .collect();
         (
             median,
             0,
