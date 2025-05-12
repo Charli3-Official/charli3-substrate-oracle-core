@@ -186,7 +186,7 @@ pub mod pallet {
         },
     }
 
-    #[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, MaxEncodedLen, TypeInfo)]
+    #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo)]
     pub struct OracleMessage {
         pub median_price: u32,
         pub timestamp: u64,
