@@ -83,9 +83,6 @@ pub mod pallet {
     #[pallet::storage]
     pub type DivergencePercentage<T> = StorageValue<_, u32>;
 
-    #[pallet::storage]
-    pub type SignatureStorage<T> = StorageValue<_, [u8; 64]>;
-
     /// NodesPrices store latest price for each node
     /// about Identity hasher https://docs.substrate.io/build/runtime-storage/#common-substrate-hashers
     #[pallet::storage]
@@ -101,6 +98,18 @@ pub mod pallet {
     /// The second value is the age of the median price
     #[pallet::storage]
     pub type Price<T> = StorageValue<_, (u32, u16)>;
+
+    /// Signatures are indexed by oracle message timestamp.
+    /// Second key is the signatory pub key, value is the signature bytes.
+    #[pallet::storage]
+    pub type SignatureStorage<T: Config> = StorageDoubleMap<
+        Hasher1 = Identity,
+        Key1 = u64,
+        Hasher2 = Identity,
+        Key2 = T::AccountId,
+        Value = [u8; 64],
+        QueryKind = OptionQuery
+    >;
 
     /// oracle genesis config definition and associated macros
     // see https://docs.substrate.io/reference/how-to-guides/basics/configure-genesis-state/
@@ -180,7 +189,7 @@ pub mod pallet {
     pub struct OracleMessage {
         median_price: u32,
         timestamp: u64,
-        rewards: AllocVec<AllocVec<u8>>, // Vec of byte arrays for ed25519 public keys
+        rewards: AllocVec<[u8; 32]>, // Vec of byte arrays for ed25519 public keys
     }
 
     impl OracleMessage {
@@ -265,16 +274,17 @@ pub mod pallet {
                         if let Some((prev_median, prev_age)) = Price::<T>::get() {
                             // Get timestamp in milliseconds
                             let now_millis = timestamp::Pallet::<T>::get().saturated_into::<u64>();
-                            let account_encoded = signer_account.clone().id.encode();
+                            let account_bytes = signer_account.clone().id.encode();
+                            let account_encoded: [u8; 32] = account_bytes.try_into()
+                                    .expect("Account buffer should be exactly 32 bytes");
                             let account_hex: Box<str> = account_encoded.encode_hex();
                             log::info!("Account hex: {}", account_hex);
-                            let account_vec = account_encoded.to_vec();
 
                             if prev_age == 0 {
                                 let msg = OracleMessage {
                                     median_price: prev_median,
                                     timestamp: now_millis,
-                                    rewards: codec::alloc::vec![account_vec],
+                                    rewards: codec::alloc::vec![account_encoded],
                                 };
                                 log::info!("Prepared Message: {:?}", msg);
                                 let cbor_hex: Box<str> = msg.to_cardano_cbor().encode_hex();
