@@ -3,12 +3,14 @@
 pub use pallet::*;
 
 use frame_support::pallet_prelude::{BoundedVec, ConstU32};
-use frame_system::pallet_prelude::BlockNumberFor;
+use frame_system::{offchain::{SignMessage, Signer}, pallet_prelude::BlockNumberFor};
 use pallet_timestamp::{self as timestamp};
 use scale_info::prelude::{vec, vec::Vec};
 use sp_core::crypto::KeyTypeId;
 use codec::{Decode, Encode, MaxEncodedLen};
 use sp_runtime::SaturatedConversion;
+use hex::ToHex;
+use sp_std::boxed::Box;
 
 pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"orac");
 
@@ -49,13 +51,11 @@ pub mod pallet {
     use super::*;
     use frame_support::{pallet_prelude::*, traits::BuildGenesisConfig};
     use frame_system::{
-        offchain::{AppCrypto, CreateSignedTransaction, SendSignedTransaction, Signer, SignMessage},
+        offchain::{AppCrypto, CreateSignedTransaction, SendSignedTransaction, Signer},
         pallet_prelude::*,
     };
     use scale_info::{prelude::fmt, TypeInfo};
     use sp_runtime::{offchain::http, sp_std::str};
-    use hex::ToHex;
-    use sp_std::boxed::Box;
     use sp_core::hashing::blake2_256;
     use minicbor::encode::Encoder;
     use codec::alloc::vec::Vec as AllocVec;
@@ -176,6 +176,12 @@ pub mod pallet {
             who: T::AccountId,
             when: BlockNumberFor<T>,
         },
+        StoredSignature {
+            message: OracleMessage,
+            who: T::AccountId,
+            when: BlockNumberFor<T>,
+            signature: T::Signature,
+        },
         Status {
             median_price: u32,
             flag: Flag,
@@ -244,17 +250,43 @@ pub mod pallet {
     impl<T: Config> Pallet<T> {
         #[pallet::call_index(0)]
         #[pallet::weight((0, Pays::No))]
-        pub fn store_price(origin: OriginFor<T>, price: u32) -> DispatchResult {
+        pub fn store_price_and_signature(
+            origin: OriginFor<T>,
+            price: Option<u32>,
+            signed_msg: Option<(OracleMessage, T::Signature)>,
+        ) -> DispatchResult {
             let who = ensure_signed(origin)?;
             let when = <frame_system::Pallet<T>>::block_number();
-            NodesPrices::<T>::insert(&who, (price, when));
-            Self::deposit_event(Event::StoredPrice {
-                price,
-                who: who.clone(),
-                when,
-            });
+
+            if let Some(price) = price {
+                NodesPrices::<T>::insert(&who, (price, when));
+
+                Self::deposit_event(Event::StoredPrice {
+                    price,
+                    who: who.clone(),
+                    when,
+                });
+            }
+
+            if let Some((message, signature)) = signed_msg {
+                let mut signature_bytes: AllocVec<u8> = signature.encode();
+                signature_bytes.remove(0);
+                let signature_encoded: [u8; 64] = signature_bytes
+                    .try_into()
+                    .expect("signature buffer should be exactly 64 bytes");
+                SignatureStorage::<T>::insert(message.timestamp, &who, signature_encoded);
+
+                Self::deposit_event(Event::StoredSignature {
+                    message,
+                    who,
+                    when,
+                    signature,
+                });
+            }
+
             Ok(())
         }
+
     }
 
     /// pallet auxiliary methods
@@ -278,58 +310,24 @@ pub mod pallet {
                         .with_filter(vec![signer_account.clone().public]);
 
                     if signer.can_sign() {
-                        if let Some((msg, prev_age)) = Price::<T>::get() {
-                            let account_bytes = signer_account.clone().id.encode();
-                            let account_encoded: [u8; 32] = account_bytes.try_into()
-                                    .expect("Account buffer should be exactly 32 bytes");
-                            let account_hex: Box<str> = account_encoded.encode_hex();
-                            log::info!("Account hex: {}", account_hex);
-
-                            if prev_age == 0 {
-                                log::info!("Prepared Message: {:?}", msg);
-                                let cbor_hex: Box<str> = msg.to_cardano_cbor().encode_hex();
-                                log::info!("Message cbor: {}", cbor_hex);
-                                let msg_hash_digest = msg.cardano_cbor_hash();
-                                let msg_hash_hex: Box<str> = msg_hash_digest.encode_hex();
-                                log::info!("Message hash: {}", msg_hash_hex);
-
-                                if let Some(signed_message) = signer.sign_message(&msg_hash_digest).pop() {
-                                    log::info!("Account signed: {:?}", signed_message.0.id);
-                                    // SignatureStorage::<T>::put(signed_message.1);
-                                    // log::info!("Stored signed message");
-
-                                    let hex_signature: Box<str> = signed_message.1.encode().encode_hex();
-                                    log::info!("Signed message: {}", hex_signature);
-                                } else {
-                                    log::error!("Couldn't retrieve signature");
-                                }
-                            }
-                        }
-                        match Self::fetch_price() {
-                            Ok(price) => {
-                                let result = signer.send_single_signed_transaction(
-                                    &signer_account,
-                                    Call::store_price { price },
-                                );
-                                if result.is_some_and(|res| res.is_ok()) {
-                                    log::info!(
-                                        "[{:?}]: submit transaction success.",
-                                        signer_account.id
-                                    )
-                                } else {
-                                    log::error!(
-                                        "[{:?}]: submit transaction failure.",
-                                        signer_account.id
-                                    )
-                                }
-                            }
-                            Err(e) => {
+                        let price = Self::fetch_price()
+                            .map_err(|e| {
                                 log::error!(
                                     "[{:?}]: failed to fetch price: {:?}",
                                     signer_account.id,
                                     e
                                 );
-                            }
+                            })
+                            .ok();
+                        let signed_msg = Self::sign_oracle_message(&signer);
+                        let result = signer.send_single_signed_transaction(
+                            &signer_account,
+                            Call::store_price_and_signature { price, signed_msg },
+                        );
+                        if result.is_some_and(|res| res.is_ok()) {
+                            log::info!("[{:?}]: submit transaction success.", signer_account.id)
+                        } else {
+                            log::error!("[{:?}]: submit transaction failure.", signer_account.id)
                         }
                     }
                 }
@@ -545,6 +543,36 @@ impl<T: Config> Pallet<T> {
             y - x
         } else {
             x - y
+        }
+    }
+
+    fn sign_oracle_message(
+        signer: &Signer<T, <T as Config>::AuthorityId, frame_system::offchain::ForAll>,
+    ) -> Option<(OracleMessage, T::Signature)> {
+        if let Some((message, prev_age)) = Price::<T>::get() {
+            if prev_age == 0 {
+                log::info!("Prepared Message: {:?}", message);
+                let cbor_hex: Box<str> = message.to_cardano_cbor().encode_hex();
+                log::info!("Message cbor: {}", cbor_hex);
+                let msg_hash_digest = message.cardano_cbor_hash();
+                let msg_hash_hex: Box<str> = msg_hash_digest.encode_hex();
+                log::info!("Message hash: {}", msg_hash_hex);
+
+                if let Some(signed_message) = signer.sign_message(&msg_hash_digest).pop() {
+                    log::info!("Account signed: {:?}", signed_message.0.id);
+                    let hex_signature: Box<str> = signed_message.1.encode().encode_hex();
+                    log::info!("Signed message: {}", hex_signature);
+
+                    Some((message, signed_message.1))
+                } else {
+                    log::error!("Couldn't retrieve signature");
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
         }
     }
 }
