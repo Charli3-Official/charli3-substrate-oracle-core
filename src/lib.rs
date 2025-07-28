@@ -2,14 +2,17 @@
 
 pub use pallet::*;
 
+use codec::{Decode, Encode, MaxEncodedLen};
 use frame_support::pallet_prelude::{BoundedVec, ConstU32};
-use frame_system::{offchain::{SignMessage, Signer}, pallet_prelude::BlockNumberFor};
+use frame_system::{
+    offchain::{SignMessage, Signer},
+    pallet_prelude::BlockNumberFor,
+};
+use hex::ToHex;
 use pallet_timestamp::{self as timestamp};
 use scale_info::prelude::{vec, vec::Vec};
 use sp_core::crypto::KeyTypeId;
-use codec::{Decode, Encode, MaxEncodedLen};
 use sp_runtime::SaturatedConversion;
-use hex::ToHex;
 use sp_std::boxed::Box;
 
 pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"orac");
@@ -49,16 +52,16 @@ pub mod crypto {
 #[frame_support::pallet]
 pub mod pallet {
     use super::*;
+    use codec::alloc::vec::Vec as AllocVec;
     use frame_support::{pallet_prelude::*, traits::BuildGenesisConfig};
     use frame_system::{
         offchain::{AppCrypto, CreateSignedTransaction, SendSignedTransaction, Signer},
         pallet_prelude::*,
     };
-    use scale_info::{prelude::fmt, TypeInfo};
-    use sp_runtime::{offchain::http, sp_std::str};
-    use sp_core::hashing::blake2_256;
     use minicbor::encode::Encoder;
-    use codec::alloc::vec::Vec as AllocVec;
+    use scale_info::{prelude::fmt, TypeInfo};
+    use sp_core::hashing::blake2_256;
+    use sp_runtime::{offchain::http, sp_std::str};
 
     #[pallet::pallet]
     pub struct Pallet<T>(_);
@@ -109,7 +112,7 @@ pub mod pallet {
         Hasher2 = Identity,
         Key2 = T::AccountId,
         Value = [u8; 64],
-        QueryKind = OptionQuery
+        QueryKind = OptionQuery,
     >;
 
     /// oracle genesis config definition and associated macros
@@ -121,7 +124,7 @@ pub mod pallet {
         pub outliers_range: u32,
         pub divergence_percentage: u32,
         // Ties `T` to `GenesisConfig` because is needed for `impl<T: Config> BuildGenesisConfig ...`
-        _marker: PhantomData<T>,
+        pub _marker: PhantomData<T>,
     }
 
     impl<T: Config> Default for GenesisConfig<T> {
@@ -148,13 +151,13 @@ pub mod pallet {
 
     // Information about whether the aggregation happened or not
     #[derive(Clone, PartialEq, Encode, Decode, TypeInfo, Debug)]
-    pub enum AggregationStatus<T:Config> {
+    pub enum AggregationStatus<T: Config> {
         AggregationPerformed {
             non_outliers: u16,
             non_outlier_prices: Vec<u32>,
             outliers: u16,
             outlier_prices: Vec<u32>,
-            rewards: Vec<T::AccountId>
+            rewards: Vec<T::AccountId>,
         },
         AggregationNotPerformed,
     }
@@ -196,12 +199,16 @@ pub mod pallet {
     pub struct OracleMessage {
         pub median_price: u32,
         pub timestamp: u64,
-        pub rewards: BoundedVec::<[u8; 32], ConstU32<64>>, // Vec of byte arrays for ed25519 public keys
+        pub rewards: BoundedVec<[u8; 32], ConstU32<64>>, // Vec of byte arrays for ed25519 public keys
     }
 
     impl Default for OracleMessage {
         fn default() -> Self {
-            OracleMessage { median_price: 0, timestamp: 0, rewards: BoundedVec::default() }
+            OracleMessage {
+                median_price: 0,
+                timestamp: 0,
+                rewards: BoundedVec::default(),
+            }
         }
     }
 
@@ -288,7 +295,6 @@ pub mod pallet {
 
             Ok(())
         }
-
     }
 
     /// pallet auxiliary methods
@@ -380,17 +386,21 @@ pub mod pallet {
                         }
                     })
                     .collect();
-                let (oracle_message, age, flag, status): (OracleMessage, u16, Flag, crate::AggregationStatus<T>) =
-                    if min_nodes_for_trusted_aggregation <= participating_nodes {
-                        log::info!(
-                            "{:?} nodes submitted a price. Aggregating median price ...",
-                            participating_nodes
-                        );
-                        Self::aggregate(prices, outliers_range, divergence_percentage)
-                    } else {
-                        log::error!("Not enough nodes for trusted aggregation. Reusing median ...");
-                        Self::reuse_previous_median()
-                    };
+                let (oracle_message, age, flag, status): (
+                    OracleMessage,
+                    u16,
+                    Flag,
+                    crate::AggregationStatus<T>,
+                ) = if min_nodes_for_trusted_aggregation <= participating_nodes {
+                    log::info!(
+                        "{:?} nodes submitted a price. Aggregating median price ...",
+                        participating_nodes
+                    );
+                    Self::aggregate(prices, outliers_range, divergence_percentage)
+                } else {
+                    log::error!("Not enough nodes for trusted aggregation. Reusing median ...");
+                    Self::reuse_previous_median()
+                };
                 Price::<T>::put((&oracle_message, age));
                 log::info!(
                     "Median price for block {:?} is {:?} with status: {:?}",
@@ -410,7 +420,6 @@ pub mod pallet {
                 log::error!("Couldn't fetch Oracle Config");
             }
         }
-
     }
 }
 
@@ -420,19 +429,15 @@ impl<T: Config> Pallet<T> {
         outliers_range: u32,
         divergence_percentage: u32,
     ) -> (OracleMessage, u16, Flag, crate::AggregationStatus<T>) {
-        let mut acc_and_prices = BoundedVec::<(T::AccountId, u32), ConstU32<32>>::truncate_from(acc_and_prices);
+        let mut acc_and_prices =
+            BoundedVec::<(T::AccountId, u32), ConstU32<32>>::truncate_from(acc_and_prices);
         acc_and_prices.sort_by_key(|k| k.1);
         let sorted_acc_and_prices = acc_and_prices.to_vec();
-        let length: usize = acc_and_prices.len();
-        let (_addresses, sorted_prices): (Vec<T::AccountId>, Vec<u32>) = sorted_acc_and_prices.clone().into_iter().unzip();
-        let median = Self::calculate_median(sorted_prices.clone(), length);
-        let (non_outlier_prices, outlier_prices) = Self::filter_outliers(
-            sorted_prices,
-            median,
-            length,
-            outliers_range,
-            divergence_percentage,
-        );
+        let (_addresses, sorted_prices): (Vec<T::AccountId>, Vec<u32>) =
+            sorted_acc_and_prices.clone().into_iter().unzip();
+        let median = Self::calculate_median(sorted_prices.clone());
+        let (non_outlier_prices, outlier_prices) =
+            Self::filter_outliers(sorted_prices, median, outliers_range, divergence_percentage);
         let rewards: Vec<T::AccountId> = sorted_acc_and_prices
             .into_iter()
             .filter_map(|(account, price)| {
@@ -495,11 +500,17 @@ impl<T: Config> Pallet<T> {
         }
     }
 
-    fn calculate_median(prices: Vec<u32>, length: usize) -> u32 {
-        if length % 2 == 0 {
-            prices[(length - 1) / 2]
+    fn calculate_median(prices: Vec<u32>) -> u32 {
+        let length: usize = prices.len();
+
+        if length % 2 == 1 {
+            // Odd length: return the middle element
+            prices[length / 2]
         } else {
-            (prices[(length - 1) / 2] + prices[length / 2]) / 2
+            // Even length: average of the two middle elements
+            let mid1 = prices[length / 2 - 1];
+            let mid2 = prices[length / 2];
+            (mid1 + mid2) / 2
         }
     }
 
@@ -530,18 +541,19 @@ impl<T: Config> Pallet<T> {
     fn filter_outliers(
         prices: Vec<u32>,
         median: u32,
-        length: usize,
         outliers_range: u32,
         divergence: u32,
     ) -> (Vec<u32>, Vec<u32>) {
-        let first_quartile = Self::calculate_median(
-            prices.clone().into_iter().take(length / 2).collect(),
-            length / 2,
-        );
-        let third_quartile = Self::calculate_median(
-            prices.clone().into_iter().skip(length / 2).collect(),
-            length / 2,
-        );
+        let length: usize = prices.len();
+
+        if length == 1 {
+            return (prices, Vec::new());
+        }
+
+        let first_quartile =
+            Self::calculate_median(prices.clone().into_iter().take(length / 2).collect());
+        let third_quartile =
+            Self::calculate_median(prices.clone().into_iter().skip(length / 2).collect());
 
         let interquartile_range = third_quartile - first_quartile;
 
