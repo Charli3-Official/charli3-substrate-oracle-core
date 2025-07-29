@@ -87,6 +87,14 @@ pub mod pallet {
     #[pallet::storage]
     pub type DivergencePercentage<T> = StorageValue<_, u32>;
 
+    #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo)]
+    pub struct OracleConfiguration {
+        pub min_nodes_for_trusted_aggregation: u32,
+        pub feed_age: u16,
+        pub outliers_range: u32,
+        pub divergence_percentage: u32,
+    }
+
     /// NodesPrices store latest price for each node
     /// about Identity hasher https://docs.substrate.io/build/runtime-storage/#common-substrate-hashers
     #[pallet::storage]
@@ -367,12 +375,12 @@ pub mod pallet {
 
         fn on_finalize(n: BlockNumberFor<T>) {
             log::info!("Aggregating median price for block {:?}", n);
-            if let Some((
+            if let Some(OracleConfiguration {
                 min_nodes_for_trusted_aggregation,
                 feed_age,
                 outliers_range,
                 divergence_percentage,
-            )) = Self::get_oracle_config()
+            }) = Self::get_oracle_config()
             {
                 let mut participating_nodes: u32 = 0;
                 let prices = NodesPrices::<T>::iter()
@@ -514,28 +522,31 @@ impl<T: Config> Pallet<T> {
         }
     }
 
-    fn get_oracle_config() -> Option<(u32, u16, u32, u32)> {
-        if let Some(min_nodes) = MinNodesForTrustedAggregation::<T>::get() {
-            if let Some(feed_age) = FeedAge::<T>::get() {
-                if let Some(outliers_range) = OutliersRange::<T>::get() {
-                    if let Some(divergence_percentage) = DivergencePercentage::<T>::get() {
-                        Some((min_nodes, feed_age, outliers_range, divergence_percentage))
-                    } else {
-                        log::error!("Error fetching DivergencePercentage");
-                        None
-                    }
-                } else {
-                    log::error!("Error fetching OutliersRange");
-                    None
-                }
-            } else {
-                log::error!("Error fetching FeedAge");
+    fn get_oracle_config() -> Option<OracleConfiguration> {
+        let min_nodes_for_trusted_aggregation =
+            MinNodesForTrustedAggregation::<T>::get().or_else(|| {
+                log::error!("Error fetching MinNodesForTrustedAggregation");
                 None
-            }
-        } else {
-            log::error!("Error fetching MinNodesForTrustedAggregation");
+            })?;
+        let feed_age = FeedAge::<T>::get().or_else(|| {
+            log::error!("Error fetching FeedAge");
             None
-        }
+        })?;
+        let outliers_range = OutliersRange::<T>::get().or_else(|| {
+            log::error!("Error fetching OutliersRange");
+            None
+        })?;
+        let divergence_percentage = DivergencePercentage::<T>::get().or_else(|| {
+            log::error!("Error fetching DivergencePercentage");
+            None
+        })?;
+
+        Some(OracleConfiguration {
+            min_nodes_for_trusted_aggregation,
+            feed_age,
+            outliers_range,
+            divergence_percentage,
+        })
     }
 
     fn filter_outliers(
