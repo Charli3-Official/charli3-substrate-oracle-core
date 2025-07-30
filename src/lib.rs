@@ -22,7 +22,9 @@ pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"orac");
 mod price_providers;
 use price_providers::{CryptoCompareProvider, PriceProvider};
 
-pub const SCALING_FACTOR: f64 = 10000.0;
+pub const SCALING_FACTOR: u128 = 1000;
+pub const PERCENT: u128 = 100;
+pub const IQR_APPLICABILITY_THRESHOLD: usize = 4;
 
 pub mod crypto {
     use super::KEY_TYPE;
@@ -89,14 +91,14 @@ pub mod pallet {
     pub type OutliersRange<T> = StorageValue<_, u32>;
 
     #[pallet::storage]
-    pub type DivergencePercentage<T> = StorageValue<_, u32>;
+    pub type Divergency<T> = StorageValue<_, u32>;
 
     #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo)]
     pub struct OracleConfiguration {
         pub min_nodes_for_trusted_aggregation: u32,
         pub feed_age: u16,
         pub outliers_range: u32,
-        pub divergence_percentage: u32,
+        pub divergency: u32,
     }
 
     /// NodesPrices store latest price for each node
@@ -134,7 +136,7 @@ pub mod pallet {
         pub min_nodes_for_trusted_aggregation: u32,
         pub feed_age: u16,
         pub outliers_range: u32,
-        pub divergence_percentage: u32,
+        pub divergency: u32,
         // Ties `T` to `GenesisConfig` because is needed for `impl<T: Config> BuildGenesisConfig ...`
         pub _marker: PhantomData<T>,
     }
@@ -145,7 +147,7 @@ pub mod pallet {
                 min_nodes_for_trusted_aggregation: Default::default(),
                 feed_age: Default::default(),
                 outliers_range: Default::default(),
-                divergence_percentage: Default::default(),
+                divergency: Default::default(),
                 _marker: Default::default(),
             }
         }
@@ -157,7 +159,7 @@ pub mod pallet {
             <MinNodesForTrustedAggregation<T>>::put(&self.min_nodes_for_trusted_aggregation);
             <FeedAge<T>>::put(&self.feed_age);
             <OutliersRange<T>>::put(&self.outliers_range);
-            <DivergencePercentage<T>>::put(&self.divergence_percentage);
+            <Divergency<T>>::put(&self.divergency);
         }
     }
 
@@ -383,7 +385,7 @@ pub mod pallet {
                 min_nodes_for_trusted_aggregation,
                 feed_age,
                 outliers_range,
-                divergence_percentage,
+                divergency,
             }) = Self::get_oracle_config()
             {
                 let mut participating_nodes: u32 = 0;
@@ -408,7 +410,7 @@ pub mod pallet {
                         "{:?} nodes submitted a price. Aggregating median price ...",
                         participating_nodes
                     );
-                    Self::aggregate(prices, outliers_range, divergence_percentage)
+                    Self::aggregate(prices, outliers_range, divergency)
                 } else {
                     log::error!("Not enough nodes for trusted aggregation. Reusing median ...");
                     Self::reuse_previous_median()
@@ -439,7 +441,7 @@ impl<T: Config> Pallet<T> {
     fn aggregate(
         acc_and_prices: Vec<(T::AccountId, u32)>,
         outliers_range: u32,
-        divergence_percentage: u32,
+        divergency: u32,
     ) -> (OracleMessage, u16, Flag, crate::AggregationStatus<T>) {
         let mut acc_and_prices =
             BoundedVec::<(T::AccountId, u32), ConstU32<32>>::truncate_from(acc_and_prices);
@@ -448,49 +450,58 @@ impl<T: Config> Pallet<T> {
         let (_addresses, sorted_prices): (Vec<T::AccountId>, Vec<u32>) =
             sorted_acc_and_prices.clone().into_iter().unzip();
         let median = Self::calculate_median(sorted_prices.clone());
-        let (non_outlier_prices, outlier_prices) =
-            Self::filter_outliers(sorted_prices, median, outliers_range, divergence_percentage);
-        let rewards: Vec<T::AccountId> = sorted_acc_and_prices
-            .into_iter()
-            .filter_map(|(account, price)| {
-                if non_outlier_prices.contains(&price) {
-                    Some(account)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        // Get timestamp in milliseconds
-        let now_millis = timestamp::Pallet::<T>::get().saturated_into::<u64>();
-        let msg = OracleMessage {
-            median_price: median,
-            timestamp: now_millis,
-            rewards: BoundedVec::truncate_from(
-                rewards
-                    .iter()
-                    .map(|id| {
-                        let account_bytes = id.encode();
-                        let account_encoded: [u8; 32] = account_bytes
-                            .try_into()
-                            .expect("Account buffer should be exactly 32 bytes");
-                        account_encoded
-                    })
-                    .collect(),
-            ),
-        };
+        let consensus = median.and_then(|midpoint| {
+            Self::filter_outliers(sorted_prices, midpoint, outliers_range, divergency)
+        });
 
-        (
-            msg,
-            0,
-            Flag::Ok,
-            AggregationStatus::AggregationPerformed {
-                non_outliers: non_outlier_prices.len() as u16,
-                non_outlier_prices,
-                outliers: outlier_prices.len() as u16,
-                outlier_prices,
-                rewards,
-            },
-        )
+        if let Some((median, (non_outlier_prices, outlier_prices))) = median.zip(consensus) {
+            let rewards: Vec<T::AccountId> = sorted_acc_and_prices
+                .into_iter()
+                .filter_map(|(account, price)| {
+                    if non_outlier_prices.contains(&price) {
+                        Some(account)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            // Get timestamp in milliseconds
+            let now_millis = timestamp::Pallet::<T>::get().saturated_into::<u64>();
+            let msg = OracleMessage {
+                median_price: median,
+                timestamp: now_millis,
+                rewards: BoundedVec::truncate_from(
+                    rewards
+                        .iter()
+                        .map(|id| {
+                            let account_bytes = id.encode();
+                            let account_encoded: [u8; 32] = account_bytes
+                                .try_into()
+                                .expect("Account buffer should be exactly 32 bytes");
+                            account_encoded
+                        })
+                        .collect(),
+                ),
+            };
+
+            (
+                msg,
+                0,
+                Flag::Ok,
+                AggregationStatus::AggregationPerformed {
+                    non_outliers: non_outlier_prices.len() as u16,
+                    non_outlier_prices,
+                    outliers: outlier_prices.len() as u16,
+                    outlier_prices,
+                    rewards,
+                },
+            )
+        } else {
+            log::error!(
+                "Oracle consensus error: check for underflow/overflow and list size limitations"
+            );
+            Self::reuse_previous_median()
+        }
     }
 
     fn reuse_previous_median() -> (OracleMessage, u16, Flag, crate::AggregationStatus<T>) {
@@ -543,10 +554,10 @@ impl<T: Config> Pallet<T> {
         let mid_index: usize = j.to_integer().try_into().unwrap();
         // Get the j-th element of the list (0-indexed)
         let mid_left: u32 = *sorted_integers.get(mid_index)?;
-        let x_j: u128 = mid_left.try_into().unwrap();
+        let x_j: u128 = mid_left.into();
         // Get the (j+1)-th element of the list
         let mid_right: u32 = *sorted_integers.get(mid_index + 1)?;
-        let x_j_1: u128 = mid_right.try_into().unwrap();
+        let x_j_1: u128 = mid_right.into();
 
         // Linearly interpolate between x_j
         // and x_j_1, using g as the mixing factor.
@@ -570,8 +581,8 @@ impl<T: Config> Pallet<T> {
             log::error!("Error fetching OutliersRange");
             None
         })?;
-        let divergence_percentage = DivergencePercentage::<T>::get().or_else(|| {
-            log::error!("Error fetching DivergencePercentage");
+        let divergency = Divergency::<T>::get().or_else(|| {
+            log::error!("Error fetching Divergency");
             None
         })?;
 
@@ -579,7 +590,7 @@ impl<T: Config> Pallet<T> {
             min_nodes_for_trusted_aggregation,
             feed_age,
             outliers_range,
-            divergence_percentage,
+            divergency,
         })
     }
 
@@ -587,34 +598,54 @@ impl<T: Config> Pallet<T> {
         prices: Vec<u32>,
         median: u32,
         outliers_range: u32,
-        divergence: u32,
-    ) -> (Vec<u32>, Vec<u32>) {
+        divergency: u32,
+    ) -> Option<(Vec<u32>, Vec<u32>)> {
         let length: usize = prices.len();
 
         if length == 1 {
-            return (prices, Vec::new());
+            return Some((prices, Vec::new()));
         }
 
-        let first_quartile =
-            Self::calculate_median(prices.clone().into_iter().take(length / 2).collect());
-        let third_quartile =
-            Self::calculate_median(prices.clone().into_iter().skip(length / 2).collect());
+        if length < IQR_APPLICABILITY_THRESHOLD {
+            return Some(
+                prices
+                    .into_iter()
+                    .partition(|x| Self::within_divergency(*x, median, divergency)),
+            );
+        }
 
-        let interquartile_range = third_quartile - first_quartile;
+        let first_quartile: Rational = Self::quantile(prices.clone(), Rational::new(25, PERCENT))?;
+        let third_quartile: Rational = Self::quantile(prices.clone(), Rational::new(75, PERCENT))?;
+        let interquartile_range: Rational = third_quartile - first_quartile;
 
-        let lower_bound = first_quartile - (outliers_range * interquartile_range);
-        let upper_bound = third_quartile + (outliers_range * interquartile_range);
+        let iqr_fence_multiplier: Rational = Rational::new(outliers_range.into(), PERCENT);
+        let fence: Rational = iqr_fence_multiplier.checked_mul(&interquartile_range)?;
+        let lower_bound: u32 = (first_quartile - fence)
+            .round()
+            .to_integer()
+            .try_into()
+            .unwrap();
+        let upper_bound: u32 = (third_quartile + fence)
+            .round()
+            .to_integer()
+            .try_into()
+            .unwrap();
 
-        prices.into_iter().partition(|x| {
-            (lower_bound <= *x && *x <= upper_bound)
-                && Self::within_divergence(*x, median, divergence)
-        })
+        Some(prices.into_iter().partition(|x| {
+            if interquartile_range.round().to_integer() == 0 {
+                log::warn!("IQR equals zero");
+                Self::within_divergency(*x, median, divergency)
+            } else {
+                lower_bound <= *x && *x <= upper_bound
+            }
+        }))
     }
 
-    fn within_divergence(x: u32, median: u32, divergence: u32) -> bool {
-        let dif = Self::unsigned_sub(x, median);
-        let fraction = (f64::from(dif) * SCALING_FACTOR) / f64::from(median);
-        fraction <= divergence.into()
+    fn within_divergency(x: u32, median: u32, divergency: u32) -> bool {
+        let dif: Rational = Rational::from_integer(Self::unsigned_sub(x, median).into());
+        let fraction =
+            (dif * Rational::from_integer(SCALING_FACTOR)) / Rational::from_integer(median.into());
+        fraction <= Rational::from_integer(divergency.into())
     }
 
     // substraction between two u32 can cause overflow
