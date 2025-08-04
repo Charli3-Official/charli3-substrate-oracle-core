@@ -16,6 +16,7 @@ use scale_info::prelude::{vec, vec::Vec};
 use sp_core::crypto::KeyTypeId;
 use sp_runtime::{traits::CheckedSub, SaturatedConversion};
 use sp_std::boxed::Box;
+use codec::alloc::string::ToString;
 
 pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"orac");
 
@@ -314,7 +315,10 @@ pub mod pallet {
     /// pallet auxiliary methods
     impl<T: Config> Pallet<T> {
         pub fn fetch_price() -> Result<u32, http::Error> {
-            CryptoCompareProvider::fetch_price()
+            match CryptoCompareProvider::fetch_price(vec!["ADA.USD".to_string()])?.as_slice() {
+                [price] => Ok(*price),
+                _ => Err(http::Error::Unknown),
+            }
         }
     }
 
