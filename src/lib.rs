@@ -2,6 +2,7 @@
 
 pub use pallet::*;
 
+use codec::alloc::string::{String, ToString};
 use codec::{Decode, Encode, MaxEncodedLen};
 use frame_support::pallet_prelude::{BoundedVec, ConstU32};
 use frame_system::{
@@ -16,7 +17,6 @@ use scale_info::prelude::{vec, vec::Vec};
 use sp_core::crypto::KeyTypeId;
 use sp_runtime::{traits::CheckedSub, SaturatedConversion};
 use sp_std::boxed::Box;
-use codec::alloc::string::ToString;
 
 pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"orac");
 
@@ -93,6 +93,71 @@ pub mod pallet {
 
     #[pallet::storage]
     pub type Divergency<T> = StorageValue<_, u32>;
+
+    /// Trade Pair measures price of base (from) currency in terms of quote (to) currency.
+    /// E.g. ADA-USD (BASE-QUOTE) price tells a price of 1 ADA in USD.
+    #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo)]
+    pub struct TradePair {
+        /// Base aka from currency, e.g. ADA
+        base_currency: BoundedVec<u8, ConstU32<64>>,
+        /// Quote aka to currency, e.g. USD
+        quote_currency: BoundedVec<u8, ConstU32<64>>,
+    }
+
+    impl TradePair {
+        /// Create a TradePair from a ticker string (e.g., "ADA-USD").
+        /// Accepts delimiters: '_', ' ', '/', '-', '.'.
+        /// Returns a Result to handle parsing errors gracefully.
+        pub fn from_ticker(ticker: &str) -> Self {
+            let parts: Vec<&str> = ticker
+                .split(|c| c == ' ' || c == '/' || c == '-' || c == '.' || c == '_')
+                .collect();
+
+            if parts.len() != 2 {
+                panic!("Invalid ticker format: expected exactly two parts");
+            }
+
+            let base = parts[0];
+            let quote = parts[1];
+
+            // Convert base and quote to BoundedVec<u8, ConstU32<64>>
+            let base_currency = BoundedVec::try_from(base.as_bytes().to_vec())
+                .expect("Base currency exceeds 64 bytes");
+            let quote_currency = BoundedVec::try_from(quote.as_bytes().to_vec())
+                .expect("Quote currency exceeds 64 bytes");
+
+            TradePair {
+                base_currency,
+                quote_currency,
+            }
+        }
+
+        /// Convert the TradePair to a ticker string (e.g., "ADA-USD").
+        /// Uses '-' as the delimiter.
+        /// Panics if the ticker exceeds 128 bytes or if the data is not valid UTF-8.
+        /// Assumes base_currency and quote_currency are valid UTF-8.
+        pub fn to_ticker(&self) -> String {
+            // Convert BoundedVec to Vec<u8> for base and quote
+            let base: Vec<u8> = self.base_currency.clone().into();
+            let quote: Vec<u8> = self.quote_currency.clone().into();
+
+            // Create the ticker by concatenating base, delimiter, and quote
+            let mut ticker = base;
+            ticker.push(b'-'); // Add delimiter
+            ticker.extend(quote);
+
+            // Ensure the result fits within the 128-byte bound
+            let bounded_ticker = BoundedVec::<u8, ConstU32<128>>::try_from(ticker)
+                .expect("Ticker exceeds 128 bytes");
+
+            // Convert to String, assuming valid UTF-8
+            // Safety: We assume base_currency and quote_currency are valid UTF-8
+            // (enforced by from_ticker or extrinsic validation)
+            sp_std::str::from_utf8(&bounded_ticker)
+                .expect("Invalid utf-8")
+                .to_string()
+        }
+    }
 
     #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo)]
     pub struct OracleConfiguration {
