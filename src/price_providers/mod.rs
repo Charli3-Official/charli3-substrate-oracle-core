@@ -1,10 +1,10 @@
 use hex;
 use serde::{Deserialize, Serialize};
-use sp_runtime::format;
 use sp_runtime::offchain::{http, Duration};
 use sp_runtime::sp_std::borrow::ToOwned;
 use sp_runtime::sp_std::str;
 use sp_runtime::Vec;
+use scale_info::prelude::format;
 
 pub trait PriceProvider {
     fn fetch_price() -> Result<u32, http::Error>;
