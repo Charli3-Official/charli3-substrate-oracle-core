@@ -151,7 +151,7 @@ pub mod pallet {
     }
 
     // Information about whether the aggregation happened or not
-    #[derive(Clone, PartialEq, Encode, Decode, TypeInfo, Debug)]
+    #[derive(Clone, PartialEq, Encode, Decode, DecodeWithMemTracking, TypeInfo, Debug)]
     pub enum AggregationStatus<T: Config> {
         AggregationPerformed {
             non_outliers: u16,
