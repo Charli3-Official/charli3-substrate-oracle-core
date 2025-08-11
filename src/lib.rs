@@ -6,7 +6,7 @@ use codec::{Decode, Encode, MaxEncodedLen};
 use frame_support::__private::codec::DecodeWithMemTracking;
 use frame_support::pallet_prelude::{BoundedVec, ConstU32};
 use frame_system::{
-    offchain::{SignMessage, Signer,SigningTypes},
+    offchain::{SignMessage, Signer, SigningTypes},
     pallet_prelude::BlockNumberFor,
 };
 use hex::ToHex;
@@ -68,7 +68,13 @@ pub mod pallet {
     pub struct Pallet<T>(_);
 
     #[pallet::config]
-    pub trait Config: frame_system::Config + SigningTypes + CreateSignedTransaction<Call<Self>> + pallet_timestamp::Config + fmt::Debug {
+    pub trait Config:
+        frame_system::Config
+        + SigningTypes
+        + CreateSignedTransaction<Call<Self>>
+        + pallet_timestamp::Config
+        + fmt::Debug
+    {
         /// The overarching event type.
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
         /// AuthorityId for offchain signing. Uses the associated `Public`/`Signature` from SigningTypes.
@@ -164,14 +170,15 @@ pub mod pallet {
     }
 
     // Aggregation status flag
-    #[derive(Clone, PartialEq, Encode, Decode, DecodeWithMemTracking, MaxEncodedLen, TypeInfo, Debug)]
+    #[derive(
+        Clone, PartialEq, Encode, Decode, DecodeWithMemTracking, MaxEncodedLen, TypeInfo, Debug,
+    )]
     #[codec(mel_bound())]
     pub enum Flag {
         Ok,
         NotEnoughNodes,
         NoPreviousMedian,
     }
-
 
     /// pallet events
     #[pallet::event]
@@ -198,14 +205,15 @@ pub mod pallet {
         },
     }
 
-    #[derive(Clone, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo)]
+    #[derive(
+        Clone, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo,
+    )]
     #[codec(mel_bound())]
     pub struct OracleMessage {
         pub median_price: u32,
         pub timestamp: u64,
         pub rewards: BoundedVec<[u8; 32], ConstU32<64>>, // Vec of byte arrays for ed25519 public keys
     }
-
 
     impl Default for OracleMessage {
         fn default() -> Self {
