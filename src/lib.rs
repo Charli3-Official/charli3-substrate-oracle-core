@@ -6,7 +6,7 @@ use codec::{Decode, Encode, MaxEncodedLen};
 use frame_support::__private::codec::DecodeWithMemTracking;
 use frame_support::pallet_prelude::{BoundedVec, ConstU32};
 use frame_system::{
-    offchain::{SignMessage, Signer},
+    offchain::{SignMessage, Signer,SigningTypes},
     pallet_prelude::BlockNumberFor,
 };
 use hex::ToHex;
@@ -68,9 +68,10 @@ pub mod pallet {
     pub struct Pallet<T>(_);
 
     #[pallet::config]
-    pub trait Config:
-        frame_system::Config<RuntimeEvent: From<Event<Self>>> + timestamp::Config + CreateSignedTransaction<Call<Self>> + fmt::Debug
-    {
+    pub trait Config: frame_system::Config + SigningTypes + CreateSignedTransaction<Call<Self>> + pallet_timestamp::Config + fmt::Debug {
+        /// The overarching event type.
+        type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
+        /// AuthorityId for offchain signing. Uses the associated `Public`/`Signature` from SigningTypes.
         type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
     }
 
