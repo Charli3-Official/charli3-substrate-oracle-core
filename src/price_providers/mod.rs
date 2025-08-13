@@ -1,8 +1,8 @@
 use codec::alloc::string::{String, ToString};
 use hex;
 use num_traits::float::FloatCore;
+use scale_info::prelude::format;
 use serde::{Deserialize, Serialize};
-use sp_runtime::format;
 use sp_runtime::offchain::{http, Duration};
 use sp_runtime::sp_std::borrow::ToOwned;
 use sp_runtime::sp_std::str;
