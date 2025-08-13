@@ -2,8 +2,7 @@
 
 pub use pallet::*;
 
-use codec::{Decode, Encode, MaxEncodedLen};
-use frame_support::__private::codec::DecodeWithMemTracking;
+use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use frame_support::pallet_prelude::{BoundedVec, ConstU32};
 use frame_system::{
     offchain::{SignMessage, Signer, SigningTypes},
