@@ -2,10 +2,10 @@
 
 pub use pallet::*;
 
-use codec::{Decode, Encode, MaxEncodedLen};
+use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use frame_support::pallet_prelude::{BoundedVec, ConstU32};
 use frame_system::{
-    offchain::{SignMessage, Signer},
+    offchain::{SignMessage, Signer, SigningTypes},
     pallet_prelude::BlockNumberFor,
 };
 use hex::ToHex;
@@ -72,9 +72,15 @@ pub mod pallet {
 
     #[pallet::config]
     pub trait Config:
-        frame_system::Config + timestamp::Config + CreateSignedTransaction<Call<Self>> + fmt::Debug
+        frame_system::Config
+        + SigningTypes
+        + CreateSignedTransaction<Call<Self>>
+        + pallet_timestamp::Config
+        + fmt::Debug
     {
+        /// The overarching event type.
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
+        /// AuthorityId for offchain signing. Uses the associated `Public`/`Signature` from SigningTypes.
         type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
     }
 
@@ -164,7 +170,7 @@ pub mod pallet {
     }
 
     // Information about whether the aggregation happened or not
-    #[derive(Clone, PartialEq, Encode, Decode, TypeInfo, Debug)]
+    #[derive(Clone, PartialEq, Encode, Decode, DecodeWithMemTracking, TypeInfo, Debug)]
     pub enum AggregationStatus<T: Config> {
         AggregationPerformed {
             non_outliers: u16,
@@ -177,7 +183,9 @@ pub mod pallet {
     }
 
     // Aggregation status flag
-    #[derive(Clone, PartialEq, Encode, Decode, MaxEncodedLen, TypeInfo, Debug)]
+    #[derive(
+        Clone, PartialEq, Encode, Decode, DecodeWithMemTracking, MaxEncodedLen, TypeInfo, Debug,
+    )]
     pub enum Flag {
         Ok,
         NotEnoughNodes,
@@ -209,7 +217,9 @@ pub mod pallet {
         },
     }
 
-    #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo)]
+    #[derive(
+        Clone, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo,
+    )]
     pub struct OracleMessage {
         pub median_price: u32,
         pub timestamp: u64,
