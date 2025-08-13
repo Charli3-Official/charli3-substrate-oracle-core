@@ -187,7 +187,6 @@ pub mod pallet {
     #[derive(
         Clone, PartialEq, Encode, Decode, DecodeWithMemTracking, MaxEncodedLen, TypeInfo, Debug,
     )]
-    #[codec(mel_bound())]
     pub enum Flag {
         Ok,
         NotEnoughNodes,
@@ -222,7 +221,6 @@ pub mod pallet {
     #[derive(
         Clone, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo,
     )]
-    #[codec(mel_bound())]
     pub struct OracleMessage {
         pub median_price: u32,
         pub timestamp: u64,
