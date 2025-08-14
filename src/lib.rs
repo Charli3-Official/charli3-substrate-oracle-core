@@ -9,22 +9,20 @@ use frame_system::{
     pallet_prelude::BlockNumberFor,
 };
 use hex::ToHex;
-use num_rational::Ratio;
-use num_traits::ops::checked::{CheckedAdd, CheckedMul};
 use pallet_timestamp::{self as timestamp};
 use scale_info::prelude::{vec, vec::Vec};
 use sp_core::crypto::KeyTypeId;
-use sp_runtime::{traits::CheckedSub, SaturatedConversion};
+use sp_runtime::SaturatedConversion;
 use sp_std::boxed::Box;
 
 pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"orac");
 
+mod aggregation;
+mod config;
 mod price_providers;
-use price_providers::{CryptoCompareProvider, PriceProvider};
 
-pub const SCALING_FACTOR: u128 = 1000;
-pub const PERCENT: u128 = 100;
-pub const IQR_APPLICABILITY_THRESHOLD: usize = 4;
+use aggregation::{calculate_median, filter_outliers};
+use price_providers::{GenericApiProvider, PriceProvider};
 
 pub mod crypto {
     use super::KEY_TYPE;
@@ -83,8 +81,6 @@ pub mod pallet {
         /// AuthorityId for offchain signing. Uses the associated `Public`/`Signature` from SigningTypes.
         type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
     }
-
-    pub type Rational = Ratio<u128>;
 
     /// Oracle configuration
     #[pallet::storage]
@@ -324,7 +320,7 @@ pub mod pallet {
     /// pallet auxiliary methods
     impl<T: Config> Pallet<T> {
         pub fn fetch_price() -> Result<u32, http::Error> {
-            CryptoCompareProvider::fetch_price()
+            GenericApiProvider::fetch_price()
         }
     }
 
@@ -334,7 +330,7 @@ pub mod pallet {
         // Offchain worker that triggers the extrinsic submitting a price to the
         // NodePrices storage
         fn offchain_worker(_n: BlockNumberFor<T>) {
-            log::info!("Starting offchain worker to query price");
+            log::info!("Starting offchain worker to query price from configured sources");
             let mut acc_list = Signer::<T, T::AuthorityId>::keystore_accounts();
             match acc_list.next() {
                 Some(signer_account) if acc_list.next().is_none() => {
@@ -459,9 +455,9 @@ impl<T: Config> Pallet<T> {
         let sorted_acc_and_prices = acc_and_prices.to_vec();
         let (_addresses, sorted_prices): (Vec<T::AccountId>, Vec<u32>) =
             sorted_acc_and_prices.clone().into_iter().unzip();
-        let median = Self::calculate_median(sorted_prices.clone());
+        let median = calculate_median(sorted_prices.clone());
         let consensus = median.and_then(|midpoint| {
-            Self::filter_outliers(sorted_prices, midpoint, outliers_range, divergency)
+            filter_outliers(sorted_prices, midpoint, outliers_range, divergency)
         });
 
         if let Some((median, (non_outlier_prices, outlier_prices))) = median.zip(consensus) {
@@ -533,50 +529,6 @@ impl<T: Config> Pallet<T> {
         }
     }
 
-    /// It will check for underflow/overflow and list size limitations (>0) and return None in that cases.
-    fn calculate_median(sorted_integers: Vec<u32>) -> Option<u32> {
-        match sorted_integers.as_slice() {
-            [] => None,
-            [x] => Some(*x),
-            _ => Self::quantile(sorted_integers, Rational::new(1, 2))
-                .and_then(|v| v.round().to_integer().try_into().ok()),
-        }
-    }
-
-    /// Returns weighted (by proximity) average of the two elements closest to the quantile index q * (n - 1)
-    /// It will also check for underflow/overflow and list size limitations (>1) and return None in that cases.
-    fn quantile(
-        // Input list sorted
-        sorted_integers: Vec<u32>,
-        // Desired quantile (between 0 and 100%)
-        q: Rational,
-    ) -> Option<Rational> {
-        let length: u128 = sorted_integers.len().try_into().unwrap();
-
-        let n_sub_one: Rational = Rational::from_integer(length.checked_sub(1)?);
-        let quantile_index: Rational = q.checked_mul(&n_sub_one)?;
-
-        // Integral part of q * (length - 1)
-        let j: Rational = quantile_index.floor();
-        // Fractional part of q * (length - 1)
-        let g: Rational = quantile_index.checked_sub(&j)?;
-
-        let mid_index: usize = j.to_integer().try_into().unwrap();
-        // Get the j-th element of the list (0-indexed)
-        let mid_left: u32 = *sorted_integers.get(mid_index)?;
-        let x_j: u128 = mid_left.into();
-        // Get the (j+1)-th element of the list
-        let mid_right: u32 = *sorted_integers.get(mid_index + 1)?;
-        let x_j_1: u128 = mid_right.into();
-
-        // Linearly interpolate between x_j
-        // and x_j_1, using g as the mixing factor.
-        let one_g: Rational = Rational::from_integer(1).checked_sub(&g)?;
-        let fst: Rational = one_g.checked_mul(&Rational::from_integer(x_j))?;
-        let snd: Rational = g.checked_mul(&Rational::from_integer(x_j_1))?;
-        fst.checked_add(&snd)
-    }
-
     fn get_oracle_config() -> Option<OracleConfiguration> {
         let min_nodes_for_trusted_aggregation =
             MinNodesForTrustedAggregation::<T>::get().or_else(|| {
@@ -602,69 +554,6 @@ impl<T: Config> Pallet<T> {
             outliers_range,
             divergency,
         })
-    }
-
-    fn filter_outliers(
-        prices: Vec<u32>,
-        median: u32,
-        outliers_range: u32,
-        divergency: u32,
-    ) -> Option<(Vec<u32>, Vec<u32>)> {
-        let length: usize = prices.len();
-
-        if length == 1 {
-            return Some((prices, Vec::new()));
-        }
-
-        if length < IQR_APPLICABILITY_THRESHOLD {
-            return Some(
-                prices
-                    .into_iter()
-                    .partition(|x| Self::within_divergency(*x, median, divergency)),
-            );
-        }
-
-        let first_quartile: Rational = Self::quantile(prices.clone(), Rational::new(25, PERCENT))?;
-        let third_quartile: Rational = Self::quantile(prices.clone(), Rational::new(75, PERCENT))?;
-        let interquartile_range: Rational = third_quartile - first_quartile;
-
-        let iqr_fence_multiplier: Rational = Rational::new(outliers_range.into(), PERCENT);
-        let fence: Rational = iqr_fence_multiplier.checked_mul(&interquartile_range)?;
-        let lower_bound: u32 = (first_quartile - fence)
-            .round()
-            .to_integer()
-            .try_into()
-            .unwrap();
-        let upper_bound: u32 = (third_quartile + fence)
-            .round()
-            .to_integer()
-            .try_into()
-            .unwrap();
-
-        Some(prices.into_iter().partition(|x| {
-            if interquartile_range.round().to_integer() == 0 {
-                log::warn!("IQR equals zero");
-                Self::within_divergency(*x, median, divergency)
-            } else {
-                lower_bound <= *x && *x <= upper_bound
-            }
-        }))
-    }
-
-    fn within_divergency(x: u32, median: u32, divergency: u32) -> bool {
-        let dif: Rational = Rational::from_integer(Self::unsigned_sub(x, median).into());
-        let fraction =
-            (dif * Rational::from_integer(SCALING_FACTOR)) / Rational::from_integer(median.into());
-        fraction <= Rational::from_integer(divergency.into())
-    }
-
-    // substraction between two u32 can cause overflow
-    fn unsigned_sub(x: u32, y: u32) -> u32 {
-        if x <= y {
-            y - x
-        } else {
-            x - y
-        }
     }
 
     fn sign_oracle_message(
