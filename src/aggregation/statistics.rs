@@ -5,7 +5,7 @@ use sp_std::vec::Vec;
 
 pub type Rational = Ratio<u128>;
 
-const SCALING_FACTOR: u128 = 1000;
+pub const SCALING_FACTOR: u128 = 1000;
 const PERCENT: u128 = 100;
 const IQR_THRESHOLD: usize = 4;
 
