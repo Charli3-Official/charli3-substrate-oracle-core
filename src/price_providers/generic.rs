@@ -2,7 +2,9 @@ use super::PriceProvider;
 use crate::aggregation::{calculate_median, filter_outliers, SCALING_FACTOR};
 use crate::config::{DataSource, JsonPathElement, NodeConfig};
 use serde_json::Value;
+use sp_io::offchain;
 use sp_runtime::offchain::http;
+use sp_runtime::offchain::Duration;
 use sp_runtime::sp_std::{str, vec::Vec};
 
 pub struct GenericApiProvider;
@@ -18,7 +20,7 @@ impl GenericApiProvider {
                 Ok(config_str) => NodeConfig::from_json_str(config_str),
                 Err(_) => Err("Invalid UTF-8 in config"),
             },
-            None => {
+            _none => {
                 log::warn!("No node config found in storage, using default configuration");
                 Ok(NodeConfig::default())
             }
@@ -34,7 +36,11 @@ impl GenericApiProvider {
                 req = req.add_header(name, val);
             }
         }
-        req.send()
+
+        // TODO setting or constant 3 sec timeout
+        let deadline = offchain::timestamp().add(Duration::from_millis(4000));
+        req.deadline(deadline)
+            .send()
             .map_err(|_| {
                 log::error!("Failed to send request to {}", name);
             })
@@ -43,28 +49,67 @@ impl GenericApiProvider {
     }
 
     #[inline]
-    fn finish_request(
-        source: &DataSource,
-        pending: http::PendingRequest,
-    ) -> Result<f64, http::Error> {
-        let name = source.name_str().unwrap_or("unknown");
-        let resp = pending.wait().map_err(|_| {
-            log::error!("Request failed for source {}", name);
-            http::Error::Unknown
-        })?;
+    fn finish_requests(
+        requests: Vec<(&DataSource, http::PendingRequest)>,
+    ) -> Vec<Result<f64, http::Error>> {
+        let (sources, pending): (Vec<&DataSource>, Vec<http::PendingRequest>) =
+            requests.into_iter().unzip();
 
-        if resp.code != 200 {
-            log::warn!("HTTP error {} from source {}", resp.code, name);
-            return Err(http::Error::Unknown);
-        }
+        // TODO setting or constant 3 sec timeout
+        let deadline = offchain::timestamp().add(Duration::from_millis(3000));
+        let finished: Vec<Result<Result<http::Response, http::Error>, http::PendingRequest>> =
+            http::PendingRequest::try_wait_all(pending, deadline);
 
-        str::from_utf8(&resp.body().collect::<Vec<u8>>())
-            .ok()
-            .and_then(|s| Self::extract_price(s, &source.json_path))
-            .ok_or_else(|| {
-                log::warn!("Failed to extract price from source {}", name);
-                http::Error::Unknown
+        sources
+            .into_iter()
+            .zip(finished)
+            .map(|(source, req)| {
+                let name = source.name_str().unwrap_or("unknown");
+
+                match req {
+                    // deadline reached
+                    Err(_still_pending) => {
+                        log::error!("Deadline reached for source {}", name);
+                        Err(http::Error::DeadlineReached)
+                    }
+
+                    // request completed but errored
+                    Ok(Err(_)) => {
+                        log::error!("Request failed for source {}", name);
+                        Err(http::Error::Unknown)
+                    }
+
+                    // request completed successfully
+                    Ok(Ok(resp)) => {
+                        if resp.code != 200 {
+                            log::warn!("HTTP error {} from source {}", resp.code, name);
+                            return Err(http::Error::Unknown);
+                        }
+
+                        str::from_utf8(&resp.body().collect::<Vec<u8>>())
+                            .ok()
+                            .and_then(|s| Self::extract_price(s, &source.json_path))
+                            .ok_or_else(|| {
+                                log::warn!("Failed to extract price from source {}", name);
+                                http::Error::Unknown
+                            })
+                            .and_then(|price| {
+                                if Self::validate_price(price) {
+                                    log::info!(
+                                        "Successfully fetched price {} from {}",
+                                        price,
+                                        name
+                                    );
+                                    Ok(price)
+                                } else {
+                                    log::warn!("Invalid price {} from {}", price, name);
+                                    Err(http::Error::Unknown)
+                                }
+                            })
+                    }
+                }
             })
+            .collect()
     }
 
     fn extract_price(json: &str, path: &[JsonPathElement]) -> Option<f64> {
@@ -127,27 +172,14 @@ impl PriceProvider for GenericApiProvider {
             return Err(http::Error::Unknown);
         }
 
-        let (prices, errors): (Vec<_>, usize) = config
+        let pending_reqs = config
             .sources
             .iter()
             .filter_map(Self::start_request)
-            .map(|(src, pending)| {
-                let name = src.name_str().unwrap_or("unknown");
-                match Self::finish_request(src, pending) {
-                    Ok(price) if Self::validate_price(price) => {
-                        log::info!("Successfully fetched price {} from {}", price, name);
-                        Ok(price)
-                    }
-                    Ok(price) => {
-                        log::warn!("Invalid price {} from {}", price, name);
-                        Err(())
-                    }
-                    Err(_) => {
-                        log::warn!("Failed to fetch from {}", name);
-                        Err(())
-                    }
-                }
-            })
+            .collect();
+
+        let (prices, errors): (Vec<_>, usize) = Self::finish_requests(pending_reqs)
+            .into_iter()
             .fold((Vec::new(), 0), |(mut prices, errs), result| match result {
                 Ok(p) => {
                     prices.push(p);
