@@ -268,6 +268,7 @@ pub mod pallet {
             <FeedAge<T>>::put(&self.feed_age);
             <OutliersRange<T>>::put(&self.outliers_range);
             <Divergency<T>>::put(&self.divergency);
+            <TradePairs<T>>::put(&self.trade_pairs);
         }
     }
 
