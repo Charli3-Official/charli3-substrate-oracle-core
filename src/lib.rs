@@ -310,30 +310,48 @@ pub mod pallet {
             let mut buf = AllocVec::new();
             let mut encoder = Encoder::new(&mut buf);
 
-            // Write tag 121
+            // Write tag 121 for the outer OracleMessage
             encoder.tag(minicbor::data::Tag::new(121)).unwrap();
 
-            // Start indefinite-length array
+            // Start main array
             encoder.begin_array().unwrap();
 
-            // Add median_price
-            // TODO
-            // encoder.u32(self.median_price).unwrap();
+            // --- prices_and_age ---
+            encoder.begin_array().unwrap();
+            for maybe_entry in &self.prices_and_age {
+                match maybe_entry {
+                    Some((price, age)) => {
+                        encoder.tag(minicbor::data::Tag::new(121)).unwrap(); // Some
+                        encoder.begin_array().unwrap();
+                        encoder.u32(*price).unwrap();
+                        encoder.u16(*age).unwrap();
+                        encoder.end().unwrap(); // end tuple
+                    }
+                    _none => {
+                        encoder.tag(minicbor::data::Tag::new(122)).unwrap(); // None
+                        encoder.begin_array().unwrap();
+                        encoder.end().unwrap(); // empty array
+                    }
+                }
+            }
+            encoder.end().unwrap(); // end prices_and_age array
 
-            // Add timestamp (as u32 if it fits, otherwise as u64)
+            // --- timestamp ---
             if self.timestamp <= u32::MAX as u64 {
                 encoder.u32(self.timestamp as u32).unwrap();
             } else {
                 encoder.u64(self.timestamp).unwrap();
             }
 
-            // Add rewards as array of byte strings
+            // --- rewards ---
             encoder.begin_array().unwrap();
-            // TODO
-            for (reward_account, _) in &self.rewards {
-                encoder.bytes(reward_account).unwrap();
+            for (reward_account, multiplier) in &self.rewards {
+                encoder.begin_array().unwrap();
+                encoder.bytes(reward_account).unwrap(); // pubkey
+                encoder.u16(*multiplier).unwrap(); // reward multiplier
+                encoder.end().unwrap(); // end [pubkey, multiplier]
             }
-            encoder.end().unwrap(); // End rewards array
+            encoder.end().unwrap(); // end rewards array
 
             // End main array
             encoder.end().unwrap();
