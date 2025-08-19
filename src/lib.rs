@@ -424,8 +424,8 @@ pub mod pallet {
 
     /// pallet auxiliary methods
     impl<T: Config> Pallet<T> {
-        pub fn fetch_prices() -> Result<Vec<u32>, http::Error> {
-            CryptoCompareProvider::fetch_prices(vec!["ADA.USD".to_string()])
+        pub fn fetch_prices(tickers: Vec<String>) -> Result<Vec<u32>, http::Error> {
+            CryptoCompareProvider::fetch_prices(tickers)
         }
     }
 
@@ -442,8 +442,14 @@ pub mod pallet {
                     let signer = Signer::<T, T::AuthorityId>::all_accounts()
                         .with_filter(vec![signer_account.clone().public]);
 
-                    if signer.can_sign() {
-                        if let Ok(prices) = Self::fetch_prices().map_err(|e| {
+                    if let Some(trade_pairs) = TradePairs::<T>::get() {
+                        if let Ok(prices) = Self::fetch_prices(
+                            trade_pairs
+                                .iter()
+                                .map(|tp| tp.to_ticker().to_uppercase())
+                                .collect(),
+                        )
+                        .map_err(|e| {
                             log::error!(
                                 "[{:?}]: failed to fetch price: {:?}",
                                 signer_account.id,
@@ -453,10 +459,7 @@ pub mod pallet {
                             let result = signer.send_single_signed_transaction(
                                 &signer_account,
                                 Call::store_prices {
-                                    prices: prices
-                                        .into_iter()
-                                        .map(|price| (TradePair::from_ticker("ADA.USD"), price))
-                                        .collect(),
+                                    prices: trade_pairs.into_iter().zip(prices).collect(),
                                 },
                             );
                             if result.is_some_and(|res| res.is_ok()) {
@@ -488,6 +491,8 @@ pub mod pallet {
                                 )
                             }
                         }
+                    } else {
+                        log::error!("Error fetching trade pairs configuration.")
                     }
                 }
                 Some(_accounts) => log::error!("More than one account. Expected only one"),
