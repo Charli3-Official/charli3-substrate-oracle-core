@@ -272,29 +272,6 @@ pub mod pallet {
         }
     }
 
-    // Information about whether the aggregation happened or not
-    #[derive(Clone, PartialEq, Encode, Decode, DecodeWithMemTracking, TypeInfo, Debug)]
-    pub enum AggregationStatus<T: Config> {
-        AggregationPerformed {
-            non_outliers: u16,
-            non_outlier_prices: Vec<u32>,
-            outliers: u16,
-            outlier_prices: Vec<u32>,
-            rewards: Vec<T::AccountId>,
-        },
-        AggregationNotPerformed,
-    }
-
-    // Aggregation status flag
-    #[derive(
-        Clone, PartialEq, Encode, Decode, DecodeWithMemTracking, MaxEncodedLen, TypeInfo, Debug,
-    )]
-    pub enum Flag {
-        Ok,
-        NotEnoughNodes,
-        NoPreviousMedian,
-    }
-
     /// pallet events
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -311,12 +288,8 @@ pub mod pallet {
             signature: T::Signature,
         },
         Status {
-            median_price: u32,
-            flag: Flag,
-            participating_nodes: u32,
-            age: u16,
+            message: OracleMessage,
             block: BlockNumberFor<T>,
-            status: AggregationStatus<T>,
         },
     }
 
@@ -576,15 +549,10 @@ pub mod pallet {
                     n,
                     &oracle_message,
                 );
-                // TODO
-                // Self::deposit_event(Event::Status {
-                //     median_price: oracle_message.median_price,
-                //     flag,
-                //     participating_nodes,
-                //     age,
-                //     block: n,
-                //     status,
-                // })
+                Self::deposit_event(Event::Status {
+                    message: oracle_message,
+                    block: n,
+                })
             } else {
                 log::error!("Couldn't fetch Oracle Config");
             }
