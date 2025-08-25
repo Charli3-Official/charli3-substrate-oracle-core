@@ -14,6 +14,7 @@ use scale_info::prelude::{vec, vec::Vec};
 use sp_core::crypto::KeyTypeId;
 use sp_runtime::SaturatedConversion;
 use sp_std::boxed::Box;
+use sp_std::collections::btree_map::BTreeMap;
 
 pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"orac");
 
@@ -21,8 +22,9 @@ mod aggregation;
 mod config;
 mod price_providers;
 
-use aggregation::{calculate_median, filter_outliers};
-use price_providers::{GenericApiProvider, PriceProvider};
+use crate::aggregation::{calculate_median, filter_outliers};
+use crate::config::TradePair;
+use crate::price_providers::{GenericApiProvider, PriceProvider};
 
 pub mod crypto {
     use super::KEY_TYPE;
@@ -63,7 +65,7 @@ pub mod pallet {
     use minicbor::encode::Encoder;
     use scale_info::{prelude::fmt, TypeInfo};
     use sp_core::hashing::blake2_256;
-    use sp_runtime::{offchain::http, sp_std::str};
+    use sp_runtime::sp_std::str;
 
     #[pallet::pallet]
     pub struct Pallet<T>(_);
@@ -95,29 +97,39 @@ pub mod pallet {
     #[pallet::storage]
     pub type Divergency<T> = StorageValue<_, u32>;
 
+    #[pallet::storage]
+    pub type TradePairs<T> = StorageValue<_, BoundedVec<TradePair, ConstU32<64>>>;
+
+    pub type ChannelId = BoundedVec<u8, ConstU32<64>>;
+
+    #[pallet::storage]
+    pub type ChannelsToTradePairs<T> =
+        StorageValue<_, BoundedVec<(ChannelId, BoundedVec<u16, ConstU32<64>>), ConstU32<16>>>;
+
     #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo)]
     pub struct OracleConfiguration {
         pub min_nodes_for_trusted_aggregation: u32,
         pub feed_age: u16,
         pub outliers_range: u32,
         pub divergency: u32,
+        pub trade_pairs: BoundedVec<TradePair, ConstU32<64>>,
     }
 
-    /// NodesPrices store latest price for each node
-    /// about Identity hasher https://docs.substrate.io/build/runtime-storage/#common-substrate-hashers
+    /// NodesPrices store latest price for each node indexed by trade pair prefix
+    /// about hashers https://docs.substrate.io/build/runtime-storage/#common-substrate-hashers
     #[pallet::storage]
-    pub type NodesPrices<T: Config> = StorageMap<
-        Hasher = Identity,
-        Key = T::AccountId,
+    pub type NodesPrices<T: Config> = StorageDoubleMap<
+        Hasher1 = Twox64Concat,
+        Key1 = TradePair,
+        Hasher2 = Identity,
+        Key2 = T::AccountId,
         Value = (u32, BlockNumberFor<T>),
         QueryKind = OptionQuery,
     >;
 
-    /// price after nodes "consensus"
-    /// The first value is the median price
-    /// The second value is the age of the median price
+    /// Prices after nodes "consensus"
     #[pallet::storage]
-    pub type Price<T> = StorageValue<_, (OracleMessage, u16)>;
+    pub type Aggregation<T> = StorageValue<_, AggregationState>;
 
     /// Signatures are indexed by oracle message timestamp.
     /// Second key is the signatory pub key, value is the signature bytes.
@@ -139,6 +151,9 @@ pub mod pallet {
         pub feed_age: u16,
         pub outliers_range: u32,
         pub divergency: u32,
+        pub trade_pairs: BoundedVec<TradePair, ConstU32<64>>,
+        pub channels_to_trade_pairs:
+            BoundedVec<(ChannelId, BoundedVec<u16, ConstU32<64>>), ConstU32<16>>,
         // Ties `T` to `GenesisConfig` because is needed for `impl<T: Config> BuildGenesisConfig ...`
         pub _marker: PhantomData<T>,
     }
@@ -150,6 +165,8 @@ pub mod pallet {
                 feed_age: Default::default(),
                 outliers_range: Default::default(),
                 divergency: Default::default(),
+                trade_pairs: BoundedVec::truncate_from(vec![TradePair::from_ticker("ADA-USD")]),
+                channels_to_trade_pairs: BoundedVec::new(),
                 _marker: Default::default(),
             }
         }
@@ -162,74 +179,58 @@ pub mod pallet {
             <FeedAge<T>>::put(&self.feed_age);
             <OutliersRange<T>>::put(&self.outliers_range);
             <Divergency<T>>::put(&self.divergency);
+            <TradePairs<T>>::put(&self.trade_pairs);
+            <ChannelsToTradePairs<T>>::put(&self.channels_to_trade_pairs);
         }
-    }
-
-    // Information about whether the aggregation happened or not
-    #[derive(Clone, PartialEq, Encode, Decode, DecodeWithMemTracking, TypeInfo, Debug)]
-    pub enum AggregationStatus<T: Config> {
-        AggregationPerformed {
-            non_outliers: u16,
-            non_outlier_prices: Vec<u32>,
-            outliers: u16,
-            outlier_prices: Vec<u32>,
-            rewards: Vec<T::AccountId>,
-        },
-        AggregationNotPerformed,
-    }
-
-    // Aggregation status flag
-    #[derive(
-        Clone, PartialEq, Encode, Decode, DecodeWithMemTracking, MaxEncodedLen, TypeInfo, Debug,
-    )]
-    pub enum Flag {
-        Ok,
-        NotEnoughNodes,
-        NoPreviousMedian,
     }
 
     /// pallet events
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
-        StoredPrice {
-            price: u32,
+        StoredPrices {
+            count: u16,
             who: T::AccountId,
             when: BlockNumberFor<T>,
         },
-        StoredSignature {
-            message: OracleMessage,
+        StoredSignatures {
             who: T::AccountId,
             when: BlockNumberFor<T>,
-            signature: T::Signature,
+            signatures: Vec<(OracleMessage, T::Signature)>,
         },
         Status {
-            median_price: u32,
-            flag: Flag,
-            participating_nodes: u32,
-            age: u16,
+            current_state: AggregationState,
             block: BlockNumberFor<T>,
-            status: AggregationStatus<T>,
         },
     }
 
     #[derive(
         Clone, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo,
     )]
-    pub struct OracleMessage {
-        pub median_price: u32,
+    /// This is the aggregated data after oracle consensus
+    pub struct AggregationState {
+        /// Vec of prices and their respective age (in blocks ago),
+        /// Third entry is a vec of byte arrays for rewarded nodes ed25519 public keys
+        pub prices_age_and_rewards:
+            BoundedVec<Option<(u32, u16, BoundedVec<[u8; 32], ConstU32<64>>)>, ConstU32<64>>,
+        /// Aggregation timestamp
         pub timestamp: u64,
-        pub rewards: BoundedVec<[u8; 32], ConstU32<64>>, // Vec of byte arrays for ed25519 public keys
     }
 
-    impl Default for OracleMessage {
-        fn default() -> Self {
-            OracleMessage {
-                median_price: 0,
-                timestamp: 0,
-                rewards: BoundedVec::default(),
-            }
-        }
+    #[derive(
+        Clone, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo,
+    )]
+    /// This is the aggregated Oracle Message
+    pub struct OracleMessage {
+        /// Channel aka Message Queue ID,
+        /// any subscriber can then use this to identify the message he wanted to bridge.
+        pub channel_id: ChannelId,
+        /// Vec of prices and their respective age (in blocks ago).
+        pub prices_and_age: BoundedVec<Option<(u32, u16)>, ConstU32<64>>,
+        /// Aggregation timestamp.
+        pub timestamp: u64,
+        /// Vec of byte arrays for ed25519 public keys with reward multiplier.
+        pub rewards: BoundedVec<([u8; 32], u16), ConstU32<64>>,
     }
 
     impl OracleMessage {
@@ -237,28 +238,48 @@ pub mod pallet {
             let mut buf = AllocVec::new();
             let mut encoder = Encoder::new(&mut buf);
 
-            // Write tag 121
+            // Write tag 121 for the outer OracleMessage
             encoder.tag(minicbor::data::Tag::new(121)).unwrap();
 
-            // Start indefinite-length array
+            // Start main array
             encoder.begin_array().unwrap();
 
-            // Add median_price
-            encoder.u32(self.median_price).unwrap();
+            // --- prices_and_age ---
+            encoder.begin_array().unwrap();
+            for maybe_entry in &self.prices_and_age {
+                match maybe_entry {
+                    Some((price, age)) => {
+                        encoder.tag(minicbor::data::Tag::new(121)).unwrap(); // Some
+                        encoder.begin_array().unwrap();
+                        encoder.u32(*price).unwrap();
+                        encoder.u16(*age).unwrap();
+                        encoder.end().unwrap(); // end tuple
+                    }
+                    _none => {
+                        encoder.tag(minicbor::data::Tag::new(122)).unwrap(); // None
+                        encoder.begin_array().unwrap();
+                        encoder.end().unwrap(); // empty array
+                    }
+                }
+            }
+            encoder.end().unwrap(); // end prices_and_age array
 
-            // Add timestamp (as u32 if it fits, otherwise as u64)
+            // --- timestamp ---
             if self.timestamp <= u32::MAX as u64 {
                 encoder.u32(self.timestamp as u32).unwrap();
             } else {
                 encoder.u64(self.timestamp).unwrap();
             }
 
-            // Add rewards as array of byte strings
+            // --- rewards ---
             encoder.begin_array().unwrap();
-            for reward_account in &self.rewards {
-                encoder.bytes(reward_account).unwrap();
+            for (reward_account, multiplier) in &self.rewards {
+                encoder.begin_array().unwrap();
+                encoder.bytes(reward_account).unwrap(); // pubkey
+                encoder.u16(*multiplier).unwrap(); // reward multiplier
+                encoder.end().unwrap(); // end [pubkey, multiplier]
             }
-            encoder.end().unwrap(); // End rewards array
+            encoder.end().unwrap(); // end rewards array
 
             // End main array
             encoder.end().unwrap();
@@ -277,12 +298,15 @@ pub mod pallet {
     impl<T: Config> Pallet<T> {
         #[pallet::call_index(0)]
         #[pallet::weight((0, Pays::No))]
-        pub fn store_price(origin: OriginFor<T>, price: u32) -> DispatchResult {
+        pub fn store_prices(origin: OriginFor<T>, prices: Vec<(TradePair, u32)>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             let when = <frame_system::Pallet<T>>::block_number();
-            NodesPrices::<T>::insert(&who, (price, when));
-            Self::deposit_event(Event::StoredPrice {
-                price,
+            prices.iter().for_each(|(tp, price)| {
+                NodesPrices::<T>::insert(tp, &who, (price, when));
+            });
+            Self::deposit_event(Event::StoredPrices {
+                count: TryInto::<u16>::try_into(prices.len())
+                    .map_err(|_| sp_runtime::DispatchError::Other("CountOverflow"))?,
                 who: who.clone(),
                 when,
             });
@@ -291,26 +315,29 @@ pub mod pallet {
 
         #[pallet::call_index(1)]
         #[pallet::weight((0, Pays::No))]
-        pub fn store_signature(
+        pub fn store_signatures(
             origin: OriginFor<T>,
-            message: OracleMessage,
-            signature: T::Signature,
+            signatures: Vec<(OracleMessage, T::Signature)>,
         ) -> DispatchResult {
             let who: T::AccountId = ensure_signed(origin)?;
             let when = <frame_system::Pallet<T>>::block_number();
 
-            let mut signature_bytes: AllocVec<u8> = signature.encode();
-            signature_bytes.remove(0);
-            let signature_encoded: [u8; 64] = signature_bytes
-                .try_into()
-                .expect("signature buffer should be exactly 64 bytes");
-            SignatureStorage::<T>::insert(message.timestamp, &who, signature_encoded);
+            signatures
+                .clone()
+                .into_iter()
+                .for_each(|(message, signature)| {
+                    let mut signature_bytes: AllocVec<u8> = signature.encode();
+                    signature_bytes.remove(0);
+                    let signature_encoded: [u8; 64] = signature_bytes
+                        .try_into()
+                        .expect("signature buffer should be exactly 64 bytes");
+                    SignatureStorage::<T>::insert(message.timestamp, &who, signature_encoded);
+                });
 
-            Self::deposit_event(Event::StoredSignature {
-                message,
+            Self::deposit_event(Event::StoredSignatures {
                 who,
                 when,
-                signature,
+                signatures,
             });
 
             Ok(())
@@ -319,8 +346,8 @@ pub mod pallet {
 
     /// pallet auxiliary methods
     impl<T: Config> Pallet<T> {
-        pub fn fetch_price() -> Result<u32, http::Error> {
-            GenericApiProvider::fetch_price()
+        pub fn fetch_prices(tickers: Vec<TradePair>) -> Option<Vec<(TradePair, u32)>> {
+            GenericApiProvider::fetch_prices(tickers)
         }
     }
 
@@ -337,17 +364,14 @@ pub mod pallet {
                     let signer = Signer::<T, T::AuthorityId>::all_accounts()
                         .with_filter(vec![signer_account.clone().public]);
 
-                    if signer.can_sign() {
-                        if let Ok(price) = Self::fetch_price().map_err(|e| {
-                            log::error!(
-                                "[{:?}]: failed to fetch price: {:?}",
-                                signer_account.id,
-                                e
-                            );
+                    if let Some(trade_pairs) = TradePairs::<T>::get() {
+                        if let Some(prices) = Self::fetch_prices(trade_pairs.into()).or_else(|| {
+                            log::error!("[{:?}]: failed to fetch prices", signer_account.id,);
+                            None
                         }) {
                             let result = signer.send_single_signed_transaction(
                                 &signer_account,
-                                Call::store_price { price },
+                                Call::store_prices { prices },
                             );
                             if result.is_some_and(|res| res.is_ok()) {
                                 log::info!(
@@ -361,23 +385,25 @@ pub mod pallet {
                                 )
                             }
                         }
-                        if let Some((message, signature)) = Self::sign_oracle_message(&signer) {
+                        if let Some(signatures) = Self::sign_oracle_messages(&signer) {
                             let result = signer.send_single_signed_transaction(
                                 &signer_account,
-                                Call::store_signature { message, signature },
+                                Call::store_signatures { signatures },
                             );
                             if result.is_some_and(|res| res.is_ok()) {
                                 log::info!(
-                                    "[{:?}]: submit store signature transaction success.",
+                                    "[{:?}]: submit store signatures transaction success.",
                                     signer_account.id
                                 )
                             } else {
                                 log::error!(
-                                    "[{:?}]: submit store signature transaction failure.",
+                                    "[{:?}]: submit store signatures transaction failure.",
                                     signer_account.id
                                 )
                             }
                         }
+                    } else {
+                        log::error!("Error fetching trade pairs configuration.")
                     }
                 }
                 Some(_accounts) => log::error!("More than one account. Expected only one"),
@@ -392,49 +418,62 @@ pub mod pallet {
                 feed_age,
                 outliers_range,
                 divergency,
+                trade_pairs,
             }) = Self::get_oracle_config()
             {
-                let mut participating_nodes: u32 = 0;
-                let prices = NodesPrices::<T>::iter()
-                    .by_ref()
-                    .filter_map(|(k, (p, a))| {
-                        if (n - a) <= feed_age.into() {
-                            participating_nodes += 1;
-                            Some((k, p))
+                // Get timestamp in milliseconds
+                let timestamp = timestamp::Pallet::<T>::get().saturated_into::<u64>();
+
+                let prices_age_and_rewards = trade_pairs
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, trade_pair)| {
+                        log::info!("Aggregation for trade pair: {}", &trade_pair.to_ticker());
+                        let mut participating_nodes: u32 = 0;
+                        let prices = NodesPrices::<T>::iter_prefix(&trade_pair)
+                            .by_ref()
+                            .filter_map(|(k, (p, a))| {
+                                if (n - a) <= feed_age.into() {
+                                    participating_nodes += 1;
+                                    Some((k, p))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        if min_nodes_for_trusted_aggregation <= participating_nodes {
+                            log::info!(
+                                "{:?} nodes submitted a price. Aggregating median price ...",
+                                participating_nodes
+                            );
+                            Self::aggregate(prices, outliers_range, divergency)
+                            .map(|(price, rewards)| (price, 0, rewards))
+                            .or_else(|| {
+                                log::error!(
+                                    "Oracle consensus error: check for underflow/overflow and list size limitations"
+                                    );
+                                None})
                         } else {
+                            log::error!(
+                                "Not enough nodes for trusted aggregation. Reusing previous price ..."
+                            );
                             None
-                        }
+                        }.or_else(|| {
+                            let (price, age) = Self::get_previous_median(index)?;
+                            Some((price, age, BoundedVec::new()))
+                        })
                     })
                     .collect();
-                let (oracle_message, age, flag, status): (
-                    OracleMessage,
-                    u16,
-                    Flag,
-                    crate::AggregationStatus<T>,
-                ) = if min_nodes_for_trusted_aggregation <= participating_nodes {
-                    log::info!(
-                        "{:?} nodes submitted a price. Aggregating median price ...",
-                        participating_nodes
-                    );
-                    Self::aggregate(prices, outliers_range, divergency)
-                } else {
-                    log::error!("Not enough nodes for trusted aggregation. Reusing median ...");
-                    Self::reuse_previous_median()
+
+                let new_state = AggregationState {
+                    prices_age_and_rewards: BoundedVec::truncate_from(prices_age_and_rewards),
+                    timestamp,
                 };
-                Price::<T>::put((&oracle_message, age));
-                log::info!(
-                    "Median price for block {:?} is {:?} with status: {:?}",
-                    n,
-                    oracle_message.median_price,
-                    flag
-                );
+                Aggregation::<T>::put(&new_state);
+                log::info!("Aggregate state for block {:?} is {:?}", n, &new_state,);
                 Self::deposit_event(Event::Status {
-                    median_price: oracle_message.median_price,
-                    flag,
-                    participating_nodes,
-                    age,
+                    current_state: new_state,
                     block: n,
-                    status,
                 })
             } else {
                 log::error!("Couldn't fetch Oracle Config");
@@ -448,7 +487,7 @@ impl<T: Config> Pallet<T> {
         acc_and_prices: Vec<(T::AccountId, u32)>,
         outliers_range: u32,
         divergency: u32,
-    ) -> (OracleMessage, u16, Flag, crate::AggregationStatus<T>) {
+    ) -> Option<(u32, BoundedVec<[u8; 32], ConstU32<64>>)> {
         let mut acc_and_prices =
             BoundedVec::<(T::AccountId, u32), ConstU32<32>>::truncate_from(acc_and_prices);
         acc_and_prices.sort_by_key(|k| k.1);
@@ -460,73 +499,42 @@ impl<T: Config> Pallet<T> {
             filter_outliers(sorted_prices, midpoint, outliers_range, divergency)
         });
 
-        if let Some((median, (non_outlier_prices, outlier_prices))) = median.zip(consensus) {
-            let rewards: Vec<T::AccountId> = sorted_acc_and_prices
-                .into_iter()
-                .filter_map(|(account, price)| {
-                    if non_outlier_prices.contains(&price) {
-                        Some(account)
-                    } else {
-                        None
-                    }
+        let (median, (non_outlier_prices, outlier_prices)) = median.zip(consensus)?;
+        let rewards: Vec<T::AccountId> = sorted_acc_and_prices
+            .into_iter()
+            .filter_map(|(account, price)| {
+                if non_outlier_prices.contains(&price) {
+                    Some(account)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let rewards = BoundedVec::truncate_from(
+            rewards
+                .iter()
+                .map(|id| {
+                    let account_bytes = id.encode();
+                    let account_encoded: [u8; 32] = account_bytes
+                        .try_into()
+                        .expect("Account buffer should be exactly 32 bytes");
+                    account_encoded
                 })
-                .collect();
-            // Get timestamp in milliseconds
-            let now_millis = timestamp::Pallet::<T>::get().saturated_into::<u64>();
-            let msg = OracleMessage {
-                median_price: median,
-                timestamp: now_millis,
-                rewards: BoundedVec::truncate_from(
-                    rewards
-                        .iter()
-                        .map(|id| {
-                            let account_bytes = id.encode();
-                            let account_encoded: [u8; 32] = account_bytes
-                                .try_into()
-                                .expect("Account buffer should be exactly 32 bytes");
-                            account_encoded
-                        })
-                        .collect(),
-                ),
-            };
+                .collect(),
+        );
 
-            (
-                msg,
-                0,
-                Flag::Ok,
-                AggregationStatus::AggregationPerformed {
-                    non_outliers: non_outlier_prices.len() as u16,
-                    non_outlier_prices,
-                    outliers: outlier_prices.len() as u16,
-                    outlier_prices,
-                    rewards,
-                },
-            )
-        } else {
-            log::error!(
-                "Oracle consensus error: check for underflow/overflow and list size limitations"
-            );
-            Self::reuse_previous_median()
-        }
+        log::info!(
+            "Median price is {:?} with outlier prices: {:?}",
+            median,
+            outlier_prices,
+        );
+        Some((median, rewards))
     }
 
-    fn reuse_previous_median() -> (OracleMessage, u16, Flag, crate::AggregationStatus<T>) {
-        if let Some((median, age)) = Price::<T>::get() {
-            (
-                median,
-                age + 1,
-                Flag::NotEnoughNodes,
-                AggregationStatus::AggregationNotPerformed,
-            )
-        } else {
-            log::error!("Error: no median to reuse.");
-            (
-                OracleMessage::default(),
-                0,
-                Flag::NoPreviousMedian,
-                AggregationStatus::AggregationNotPerformed,
-            )
-        }
+    fn get_previous_median(trade_pair_index: usize) -> Option<(u32, u16)> {
+        let aggregation_state = Aggregation::<T>::get()?;
+        let (price, age, _) = aggregation_state.prices_age_and_rewards[trade_pair_index].clone()?;
+        Some((price, age + 1))
     }
 
     fn get_oracle_config() -> Option<OracleConfiguration> {
@@ -547,44 +555,124 @@ impl<T: Config> Pallet<T> {
             log::error!("Error fetching Divergency");
             None
         })?;
+        let trade_pairs = TradePairs::<T>::get().or_else(|| {
+            log::error!("Error fetching TradePairs");
+            None
+        })?;
 
         Some(OracleConfiguration {
             min_nodes_for_trusted_aggregation,
             feed_age,
             outliers_range,
             divergency,
+            trade_pairs,
         })
     }
 
-    fn sign_oracle_message(
+    fn sign_oracle_messages(
         signer: &Signer<T, <T as Config>::AuthorityId, frame_system::offchain::ForAll>,
-    ) -> Option<(OracleMessage, T::Signature)> {
-        let (message, age) = Price::<T>::get()?;
+    ) -> Option<Vec<(OracleMessage, T::Signature)>> {
+        let all_trade_pairs = TradePairs::<T>::get().or_else(|| {
+            log::error!("Error fetching TradePairs");
+            None
+        })?;
+        let channels_to_trade_pairs = ChannelsToTradePairs::<T>::get().or_else(|| {
+            log::error!("Error fetching ChannelsToTradePairs");
+            None
+        })?;
+        let trade_pairs_dict: BTreeMap<usize, TradePair> =
+            BTreeMap::from_iter(all_trade_pairs.clone().into_iter().enumerate());
+        let channels_to_trade_pairs: Vec<(ChannelId, Vec<TradePair>)> = channels_to_trade_pairs
+            .into_iter()
+            .map(|(chan, pairs_index)| {
+                let trade_pairs = pairs_index
+                    .into_iter()
+                    .filter_map(|i| Some(trade_pairs_dict.get(&(i as usize))?.clone()))
+                    .collect();
+                (chan, trade_pairs)
+            })
+            .collect();
 
-        if age != 0 {
-            return None;
+        let current_state = Aggregation::<T>::get().or_else(|| {
+            log::error!("Error fetching current state");
+            None
+        })?;
+        log::debug!("Current state: {:?}", &current_state);
+
+        Some(
+            channels_to_trade_pairs
+                .into_iter()
+                .filter_map(|(chan, chan_trade_pairs)| {
+                    log::debug!("Signing for channel: {:?}", &chan);
+                    let message = Self::convert_aggregation_state_to_oracle_message(
+                        &current_state,
+                        &all_trade_pairs,
+                        chan,
+                        chan_trade_pairs,
+                    );
+
+                    log::debug!("Prepared Message: {:?}", message);
+                    let cbor_hex: Box<str> = message.to_cardano_cbor().encode_hex();
+                    log::debug!("Message cbor: {}", cbor_hex);
+
+                    let msg_hash_digest = message.cardano_cbor_hash();
+                    let msg_hash_hex: Box<str> = msg_hash_digest.encode_hex();
+                    log::debug!("Message hash: {}", msg_hash_hex);
+
+                    let signed_message = match signer.sign_message(&msg_hash_digest).pop() {
+                        Some(signed) => signed,
+                        _none => {
+                            log::error!("Couldn't retrieve signature");
+                            return None;
+                        }
+                    };
+
+                    log::debug!("Account signed: {:?}", signed_message.0.id);
+                    let hex_signature: Box<str> = signed_message.1.encode().encode_hex();
+                    log::debug!("Signed message: {}", hex_signature);
+
+                    Some((message, signed_message.1))
+                })
+                .collect(),
+        )
+    }
+
+    fn convert_aggregation_state_to_oracle_message(
+        aggregation_state: &AggregationState,
+        all_trade_pairs: &Vec<TradePair>,
+        channel_id: ChannelId,
+        this_trade_pairs: Vec<TradePair>,
+    ) -> OracleMessage {
+        let state_mapping: BTreeMap<
+            &TradePair,
+            Option<(u32, u16, BoundedVec<[u8; 32], ConstU32<64>>)>,
+        > = BTreeMap::from_iter(
+            all_trade_pairs
+                .into_iter()
+                .zip(aggregation_state.prices_age_and_rewards.clone()),
+        );
+
+        let mut this_rewards: BTreeMap<[u8; 32], u16> = BTreeMap::new();
+        let prices_and_age = this_trade_pairs
+            .into_iter()
+            .map(|trade_pair| {
+                let (price, age, rewards) = state_mapping.get(&trade_pair)?.clone()?;
+                rewards.into_iter().for_each(|acc| {
+                    this_rewards
+                        .entry(acc)
+                        .and_modify(|count| *count += 1)
+                        .or_insert(1);
+                });
+
+                Some((price, age))
+            })
+            .collect();
+
+        OracleMessage {
+            channel_id,
+            prices_and_age: BoundedVec::truncate_from(prices_and_age),
+            timestamp: aggregation_state.timestamp,
+            rewards: BoundedVec::truncate_from(this_rewards.into_iter().collect()),
         }
-
-        log::info!("Prepared Message: {:?}", message);
-        let cbor_hex: Box<str> = message.to_cardano_cbor().encode_hex();
-        log::debug!("Message cbor: {}", cbor_hex);
-
-        let msg_hash_digest = message.cardano_cbor_hash();
-        let msg_hash_hex: Box<str> = msg_hash_digest.encode_hex();
-        log::debug!("Message hash: {}", msg_hash_hex);
-
-        let signed_message = match signer.sign_message(&msg_hash_digest).pop() {
-            Some(signed) => signed,
-            _none => {
-                log::error!("Couldn't retrieve signature");
-                return None;
-            }
-        };
-
-        log::info!("Account signed: {:?}", signed_message.0.id);
-        let hex_signature: Box<str> = signed_message.1.encode().encode_hex();
-        log::info!("Signed message: {}", hex_signature);
-
-        Some((message, signed_message.1))
     }
 }
