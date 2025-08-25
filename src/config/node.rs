@@ -128,6 +128,7 @@ pub struct DataSource {
     pub name: String,
     pub url: String,
     pub json_path: Vec<JsonPathElement>,
+    #[serde(default)]
     pub headers: Vec<(String, String)>,
 }
 
@@ -138,14 +139,6 @@ pub enum JsonPathElement {
     Index(u32),
 }
 
-impl NodeConfig {
-    #[inline]
-    pub fn from_json_str(json_str: &str) -> Result<Self, &'static str> {
-        serde_json::from_str(json_str).map_err(|_| "Failed to parse JSON")
-    }
-}
-
-#[inline]
 fn default_sources() -> BTreeMap<TradePair, Vec<DataSource>> {
     BTreeMap::from([(
         TradePair::from_ticker("ADA-USD"),
