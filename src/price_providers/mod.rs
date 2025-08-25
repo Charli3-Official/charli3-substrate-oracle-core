@@ -1,8 +1,9 @@
-use sp_runtime::offchain::http;
-
 pub mod generic;
 pub use generic::GenericApiProvider;
+use sp_runtime::sp_std::vec::Vec;
+
+use crate::config::TradePair;
 
 pub trait PriceProvider {
-    fn fetch_price() -> Result<u32, http::Error>;
+    fn fetch_prices(trade_pairs: Vec<TradePair>) -> Option<Vec<(TradePair, u32)>>;
 }
