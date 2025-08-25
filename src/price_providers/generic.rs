@@ -60,8 +60,8 @@ impl GenericApiProvider {
         calculate_median(scaled.clone())
             .and_then(|m| filter_outliers(scaled, m, 150, 50))
             .and_then(|(valid, outliers)| {
-                log::info!(
-                    "Source aggregation: {} valid prices, {} outliers filtered",
+                log::debug!(
+                    "Stats for aggregation: {} valid prices, {} outliers filtered",
                     valid.len(),
                     outliers.len()
                 );
@@ -145,7 +145,7 @@ impl PriceProvider for GenericApiProvider {
                     })
                     .and_then(|price| {
                         if Self::validate_price(price) {
-                            log::info!(
+                            log::debug!(
                                 "Successfully fetched price {} for pair {:?} source {:?}",
                                 price,
                                 &pair,
@@ -176,7 +176,10 @@ impl PriceProvider for GenericApiProvider {
         prices
             .into_iter()
             .for_each(|(pair, ps)| match Self::aggregate_prices(ps) {
-                Some(median) => aggregated.push((pair, (median * SCALING_FACTOR as f64) as u32)),
+                Some(median) => {
+                    log::debug!("Succeeded aggregation for trade pair {:?}", pair);
+                    aggregated.push((pair, (median * SCALING_FACTOR as f64) as u32))
+                }
                 _none => log::error!("Failed to aggregate prices for trade pair {:?}", pair),
             });
 
