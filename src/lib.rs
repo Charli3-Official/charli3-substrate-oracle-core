@@ -106,7 +106,9 @@ pub mod pallet {
     pub type ChannelsToTradePairs<T> =
         StorageValue<_, BoundedVec<(ChannelId, BoundedVec<u16, ConstU32<64>>), ConstU32<16>>>;
 
-    #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo)]
+    #[derive(
+        Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, DecodeWithMemTracking, TypeInfo,
+    )]
     pub struct OracleConfiguration {
         pub min_nodes_for_trusted_aggregation: u32,
         pub feed_age: u16,
@@ -339,6 +341,23 @@ pub mod pallet {
                 when,
                 signatures,
             });
+
+            Ok(())
+        }
+
+        #[pallet::call_index(2)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn sudo_set_config(
+            origin: OriginFor<T>,
+            config: OracleConfiguration,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+
+            <MinNodesForTrustedAggregation<T>>::put(&config.min_nodes_for_trusted_aggregation);
+            <FeedAge<T>>::put(&config.feed_age);
+            <OutliersRange<T>>::put(&config.outliers_range);
+            <Divergency<T>>::put(&config.divergency);
+            <TradePairs<T>>::put(&config.trade_pairs);
 
             Ok(())
         }
