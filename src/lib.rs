@@ -204,6 +204,10 @@ pub mod pallet {
             current_state: AggregationState,
             block: BlockNumberFor<T>,
         },
+        UpdatedConfig {
+            new_config: OracleConfiguration,
+            block: BlockNumberFor<T>,
+        },
     }
 
     #[derive(
@@ -352,12 +356,18 @@ pub mod pallet {
             config: OracleConfiguration,
         ) -> DispatchResult {
             ensure_root(origin)?;
+            let when = <frame_system::Pallet<T>>::block_number();
 
             <MinNodesForTrustedAggregation<T>>::put(&config.min_nodes_for_trusted_aggregation);
             <FeedAge<T>>::put(&config.feed_age);
             <OutliersRange<T>>::put(&config.outliers_range);
             <Divergency<T>>::put(&config.divergency);
             <TradePairs<T>>::put(&config.trade_pairs);
+
+            Self::deposit_event(Event::UpdatedConfig {
+                new_config: config,
+                block: when,
+            });
 
             Ok(())
         }
