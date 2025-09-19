@@ -383,7 +383,24 @@ pub mod pallet {
     /// pallet auxiliary methods
     impl<T: Config> Pallet<T> {
         pub fn fetch_prices(tickers: Vec<TradePair>) -> Option<Vec<(TradePair, u32)>> {
-            GenericApiProvider::fetch_prices(tickers)
+            let mut prices_from_cache = Vec::new();
+            for ticker in tickers.clone() {
+                match sp_io::offchain::local_storage_get(
+                    sp_core::offchain::StorageKind::PERSISTENT,
+                    &ticker.to_ticker_bytes(),
+                ) {
+                    Some(price_bytes) => {
+                        let price = f64::from_le_bytes(price_bytes[..8].try_into().unwrap());
+                        log::info!("Decoded price: {}", price);
+                        prices_from_cache.push((ticker, price))
+                    }
+                    _none => {
+                        log::error!("Couldn't fetch price for {}", ticker.to_ticker());
+                    }
+                };
+            }
+
+            GenericApiProvider::fetch_prices(tickers, prices_from_cache)
         }
     }
 

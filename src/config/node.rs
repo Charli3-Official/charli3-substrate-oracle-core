@@ -81,11 +81,11 @@ impl TradePair {
         }
     }
 
-    /// Convert the TradePair to a ticker string (e.g., "ADA-USD").
+    /// Convert the TradePair to a ticker bytes (e.g., "ADA-USD").
     /// Uses '-' as the delimiter.
     /// Panics if the ticker exceeds 128 bytes or if the data is not valid UTF-8.
     /// Assumes base_currency and quote_currency are valid UTF-8.
-    pub fn to_ticker(&self) -> String {
+    pub fn to_ticker_bytes(&self) -> BoundedVec<u8, sp_core::ConstU32<128>> {
         // Convert BoundedVec to Vec<u8> for base and quote
         let base: Vec<u8> = self.base_currency.clone().into();
         let quote: Vec<u8> = self.quote_currency.clone().into();
@@ -96,8 +96,15 @@ impl TradePair {
         ticker.extend(quote);
 
         // Ensure the result fits within the 128-byte bound
-        let bounded_ticker =
-            BoundedVec::<u8, ConstU32<128>>::try_from(ticker).expect("Ticker exceeds 128 bytes");
+        BoundedVec::<u8, ConstU32<128>>::try_from(ticker).expect("Ticker exceeds 128 bytes")
+    }
+
+    /// Convert the TradePair to a ticker string (e.g., "ADA-USD").
+    /// Uses '-' as the delimiter.
+    /// Panics if the ticker exceeds 128 bytes or if the data is not valid UTF-8.
+    /// Assumes base_currency and quote_currency are valid UTF-8.
+    pub fn to_ticker(&self) -> String {
+        let bounded_ticker = self.to_ticker_bytes();
 
         // Convert to String, assuming valid UTF-8
         // Safety: We assume base_currency and quote_currency are valid UTF-8
