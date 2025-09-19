@@ -8,5 +8,5 @@ pub trait PriceProvider {
     fn fetch_prices(
         trade_pairs: Vec<TradePair>,
         external_prices: Vec<(TradePair, f64)>,
-    ) -> Option<Vec<(TradePair, u32)>>;
+    ) -> Vec<(TradePair, u32)>;
 }

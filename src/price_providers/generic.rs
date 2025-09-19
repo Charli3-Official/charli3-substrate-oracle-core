@@ -80,9 +80,18 @@ impl PriceProvider for GenericApiProvider {
     fn fetch_prices(
         trade_pairs: Vec<TradePair>,
         external_prices: Vec<(TradePair, f64)>,
-    ) -> Option<Vec<(TradePair, u32)>> {
-        let config = Self::load_config()?;
-
+    ) -> Vec<(TradePair, u32)> {
+        // Load Node Api Provider Config
+        let config = match Self::load_config() {
+            Some(cfg) => cfg,
+            _none => {
+                log::warn!("Node Api Provider Config not found — using only external prices");
+                return external_prices
+                    .into_iter()
+                    .map(|(pair, price)| (pair, (price * SCALING_FACTOR as f64) as u32))
+                    .collect();
+            }
+        };
         if config.sources.is_empty() {
             log::warn!("No sources configured in oracle config");
         }
@@ -172,6 +181,7 @@ impl PriceProvider for GenericApiProvider {
                 }
             }
         }
+
         // Add external prices
         for (pair, price) in external_prices {
             prices
@@ -192,6 +202,6 @@ impl PriceProvider for GenericApiProvider {
                 _none => log::error!("Failed to aggregate prices for trade pair {:?}", pair),
             });
 
-        Some(aggregated)
+        aggregated
     }
 }
