@@ -418,42 +418,45 @@ pub mod pallet {
                         .with_filter(vec![signer_account.clone().public]);
 
                     if let Some(trade_pairs) = TradePairs::<T>::get() {
-                        if let Some(prices) = Self::fetch_prices(trade_pairs.into()).or_else(|| {
-                            log::error!("[{:?}]: failed to fetch prices", signer_account.id,);
-                            None
-                        }) {
-                            let result = signer.send_single_signed_transaction(
-                                &signer_account,
-                                Call::store_prices { prices },
-                            );
-                            if result.is_some_and(|res| res.is_ok()) {
-                                log::info!(
-                                    "[{:?}]: submit store price transaction success.",
-                                    signer_account.id
-                                )
-                            } else {
-                                log::error!(
-                                    "[{:?}]: submit store price transaction failure.",
-                                    signer_account.id
-                                )
+                        match Self::fetch_prices(trade_pairs.into()) {
+                            Some(prices) if !prices.is_empty() => {
+                                let result = signer.send_single_signed_transaction(
+                                    &signer_account,
+                                    Call::store_prices { prices },
+                                );
+                                if result.is_some_and(|res| res.is_ok()) {
+                                    log::info!(
+                                        "[{:?}]: submit store price transaction success.",
+                                        signer_account.id
+                                    )
+                                } else {
+                                    log::error!(
+                                        "[{:?}]: submit store price transaction failure.",
+                                        signer_account.id
+                                    )
+                                }
                             }
+                            _none => log::error!("Failed to fetch prices."),
                         }
-                        if let Some(signatures) = Self::sign_oracle_messages(&signer) {
-                            let result = signer.send_single_signed_transaction(
-                                &signer_account,
-                                Call::store_signatures { signatures },
-                            );
-                            if result.is_some_and(|res| res.is_ok()) {
-                                log::info!(
-                                    "[{:?}]: submit store signatures transaction success.",
-                                    signer_account.id
-                                )
-                            } else {
-                                log::error!(
-                                    "[{:?}]: submit store signatures transaction failure.",
-                                    signer_account.id
-                                )
+                        match Self::sign_oracle_messages(&signer) {
+                            Some(signatures) if !signatures.is_empty() => {
+                                let result = signer.send_single_signed_transaction(
+                                    &signer_account,
+                                    Call::store_signatures { signatures },
+                                );
+                                if result.is_some_and(|res| res.is_ok()) {
+                                    log::info!(
+                                        "[{:?}]: submit store signatures transaction success.",
+                                        signer_account.id
+                                    )
+                                } else {
+                                    log::error!(
+                                        "[{:?}]: submit store signatures transaction failure.",
+                                        signer_account.id
+                                    )
+                                }
                             }
+                            _none => log::error!("Couldn't sign oracle messages."),
                         }
                     } else {
                         log::error!("Error fetching trade pairs configuration.")
