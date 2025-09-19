@@ -391,11 +391,18 @@ pub mod pallet {
                 ) {
                     Some(price_bytes) => {
                         let price = f64::from_le_bytes(price_bytes[..8].try_into().unwrap());
-                        log::info!("Decoded price: {}", price);
+                        log::info!(
+                            "Decoded price for {} from offchain storage: {}",
+                            ticker.to_ticker(),
+                            price
+                        );
                         prices_from_cache.push((ticker, price))
                     }
                     _none => {
-                        log::error!("Couldn't fetch price for {}", ticker.to_ticker());
+                        log::warn!(
+                            "Couldn't fetch price from offchain storage for {}",
+                            ticker.to_ticker()
+                        );
                     }
                 };
             }
