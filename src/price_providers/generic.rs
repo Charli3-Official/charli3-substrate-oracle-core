@@ -1,11 +1,14 @@
 use super::PriceProvider;
 use crate::aggregation::{calculate_median, filter_outliers, SCALING_FACTOR};
 use crate::config::{DataSource, JsonPathElement, NodeConfig, TradePair};
+use codec::Decode;
 use sp_io::offchain;
 use sp_runtime::offchain::http;
 use sp_runtime::offchain::Duration;
 use sp_runtime::sp_std::{vec, vec::Vec};
 use sp_std::collections::btree_map::BTreeMap;
+
+pub const PRICE_CACHE_TTL_MS: u64 = 5 * 60 * 1000; // 5 minutes TTL
 
 pub struct GenericApiProvider;
 
@@ -74,13 +77,54 @@ impl GenericApiProvider {
     const fn validate_price(price: f64) -> bool {
         price > 0.0
     }
+
+    fn fetch_cached_prices(trade_pairs: Vec<TradePair>) -> Vec<(TradePair, f64)> {
+        let mut prices_from_cache = Vec::new();
+        for ticker in trade_pairs {
+            let now = sp_io::offchain::timestamp().unix_millis();
+            match sp_io::offchain::local_storage_get(
+                sp_core::offchain::StorageKind::PERSISTENT,
+                &ticker.to_ticker_bytes(),
+            ) {
+                Some(entry_bytes) => match <(f64, u64)>::decode(&mut &entry_bytes[..]) {
+                    Ok((price, timestamp)) => {
+                        if now - timestamp < PRICE_CACHE_TTL_MS {
+                            log::info!(
+                                    "Decoded valid cached price for {} from offchain storage: {} (age: {}ms)",
+                                    ticker.to_ticker(),
+                                    price,
+                                    now - timestamp
+                                );
+                            prices_from_cache.push((ticker, price));
+                        } else {
+                            log::warn!(
+                                "Cached price for {} expired (age: {}ms)",
+                                ticker.to_ticker(),
+                                now - timestamp
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to decode price for {}: {:?}", ticker.to_ticker(), e);
+                    }
+                },
+                _none => {
+                    log::warn!(
+                        "Couldn't fetch price from offchain storage for {}",
+                        ticker.to_ticker()
+                    );
+                }
+            }
+        }
+        prices_from_cache
+    }
 }
 
 impl PriceProvider for GenericApiProvider {
-    fn fetch_prices(
-        trade_pairs: Vec<TradePair>,
-        external_prices: Vec<(TradePair, f64)>,
-    ) -> Vec<(TradePair, u32)> {
+    fn fetch_prices(trade_pairs: Vec<TradePair>) -> Vec<(TradePair, u32)> {
+        // Load external prices from cache
+        let external_prices = Self::fetch_cached_prices(trade_pairs.clone());
+
         // Load Node Api Provider Config
         let config = match Self::load_config() {
             Some(cfg) => cfg,
