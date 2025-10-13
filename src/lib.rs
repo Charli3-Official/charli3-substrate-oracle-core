@@ -102,12 +102,16 @@ pub mod pallet {
 
     pub type ChannelId = BoundedVec<u8, ConstU32<64>>;
 
-    #[pallet::storage]
-    pub type ChannelsToTradePairs<T> =
-        StorageValue<_, BoundedVec<(ChannelId, BoundedVec<u16, ConstU32<64>>), ConstU32<16>>>;
+    pub type MessagesConfiguration =
+        BoundedVec<(ChannelId, BoundedVec<u16, ConstU32<64>>), ConstU32<16>>;
 
-    #[derive(Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo)]
-    pub struct OracleConfiguration {
+    #[pallet::storage]
+    pub type ChannelsToTradePairs<T> = StorageValue<_, MessagesConfiguration>;
+
+    #[derive(
+        Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, DecodeWithMemTracking, TypeInfo,
+    )]
+    pub struct ConsensusConfiguration {
         pub min_nodes_for_trusted_aggregation: u32,
         pub feed_age: u16,
         pub outliers_range: u32,
@@ -152,8 +156,7 @@ pub mod pallet {
         pub outliers_range: u32,
         pub divergency: u32,
         pub trade_pairs: BoundedVec<TradePair, ConstU32<64>>,
-        pub channels_to_trade_pairs:
-            BoundedVec<(ChannelId, BoundedVec<u16, ConstU32<64>>), ConstU32<16>>,
+        pub channels_to_trade_pairs: MessagesConfiguration,
         // Ties `T` to `GenesisConfig` because is needed for `impl<T: Config> BuildGenesisConfig ...`
         pub _marker: PhantomData<T>,
     }
@@ -200,6 +203,11 @@ pub mod pallet {
         },
         Status {
             current_state: AggregationState,
+            block: BlockNumberFor<T>,
+        },
+        UpdatedConfig {
+            consensus_config: ConsensusConfiguration,
+            channels_to_trade_pairs: MessagesConfiguration,
             block: BlockNumberFor<T>,
         },
     }
@@ -342,6 +350,34 @@ pub mod pallet {
 
             Ok(())
         }
+
+        #[pallet::call_index(2)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn sudo_set_config(
+            origin: OriginFor<T>,
+            consensus_config: ConsensusConfiguration,
+            channels_to_trade_pairs: MessagesConfiguration,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            let when = <frame_system::Pallet<T>>::block_number();
+
+            <MinNodesForTrustedAggregation<T>>::put(
+                &consensus_config.min_nodes_for_trusted_aggregation,
+            );
+            <FeedAge<T>>::put(&consensus_config.feed_age);
+            <OutliersRange<T>>::put(&consensus_config.outliers_range);
+            <Divergency<T>>::put(&consensus_config.divergency);
+            <TradePairs<T>>::put(&consensus_config.trade_pairs);
+            <ChannelsToTradePairs<T>>::put(&channels_to_trade_pairs);
+
+            Self::deposit_event(Event::UpdatedConfig {
+                consensus_config,
+                channels_to_trade_pairs,
+                block: when,
+            });
+
+            Ok(())
+        }
     }
 
     /// pallet auxiliary methods
@@ -365,42 +401,45 @@ pub mod pallet {
                         .with_filter(vec![signer_account.clone().public]);
 
                     if let Some(trade_pairs) = TradePairs::<T>::get() {
-                        if let Some(prices) = Self::fetch_prices(trade_pairs.into()).or_else(|| {
-                            log::error!("[{:?}]: failed to fetch prices", signer_account.id,);
-                            None
-                        }) {
-                            let result = signer.send_single_signed_transaction(
-                                &signer_account,
-                                Call::store_prices { prices },
-                            );
-                            if result.is_some_and(|res| res.is_ok()) {
-                                log::info!(
-                                    "[{:?}]: submit store price transaction success.",
-                                    signer_account.id
-                                )
-                            } else {
-                                log::error!(
-                                    "[{:?}]: submit store price transaction failure.",
-                                    signer_account.id
-                                )
+                        match Self::fetch_prices(trade_pairs.into()) {
+                            Some(prices) if !prices.is_empty() => {
+                                let result = signer.send_single_signed_transaction(
+                                    &signer_account,
+                                    Call::store_prices { prices },
+                                );
+                                if result.is_some_and(|res| res.is_ok()) {
+                                    log::info!(
+                                        "[{:?}]: submit store price transaction success.",
+                                        signer_account.id
+                                    )
+                                } else {
+                                    log::error!(
+                                        "[{:?}]: submit store price transaction failure.",
+                                        signer_account.id
+                                    )
+                                }
                             }
+                            _none => log::error!("Failed to fetch prices."),
                         }
-                        if let Some(signatures) = Self::sign_oracle_messages(&signer) {
-                            let result = signer.send_single_signed_transaction(
-                                &signer_account,
-                                Call::store_signatures { signatures },
-                            );
-                            if result.is_some_and(|res| res.is_ok()) {
-                                log::info!(
-                                    "[{:?}]: submit store signatures transaction success.",
-                                    signer_account.id
-                                )
-                            } else {
-                                log::error!(
-                                    "[{:?}]: submit store signatures transaction failure.",
-                                    signer_account.id
-                                )
+                        match Self::sign_oracle_messages(&signer) {
+                            Some(signatures) if !signatures.is_empty() => {
+                                let result = signer.send_single_signed_transaction(
+                                    &signer_account,
+                                    Call::store_signatures { signatures },
+                                );
+                                if result.is_some_and(|res| res.is_ok()) {
+                                    log::info!(
+                                        "[{:?}]: submit store signatures transaction success.",
+                                        signer_account.id
+                                    )
+                                } else {
+                                    log::error!(
+                                        "[{:?}]: submit store signatures transaction failure.",
+                                        signer_account.id
+                                    )
+                                }
                             }
+                            _none => log::error!("Couldn't sign oracle messages."),
                         }
                     } else {
                         log::error!("Error fetching trade pairs configuration.")
@@ -413,7 +452,7 @@ pub mod pallet {
 
         fn on_finalize(n: BlockNumberFor<T>) {
             log::info!("Aggregating median price for block {:?}", n);
-            if let Some(OracleConfiguration {
+            if let Some(ConsensusConfiguration {
                 min_nodes_for_trusted_aggregation,
                 feed_age,
                 outliers_range,
@@ -537,7 +576,7 @@ impl<T: Config> Pallet<T> {
         Some((price, age + 1))
     }
 
-    fn get_oracle_config() -> Option<OracleConfiguration> {
+    fn get_oracle_config() -> Option<ConsensusConfiguration> {
         let min_nodes_for_trusted_aggregation =
             MinNodesForTrustedAggregation::<T>::get().or_else(|| {
                 log::error!("Error fetching MinNodesForTrustedAggregation");
@@ -560,7 +599,7 @@ impl<T: Config> Pallet<T> {
             None
         })?;
 
-        Some(OracleConfiguration {
+        Some(ConsensusConfiguration {
             min_nodes_for_trusted_aggregation,
             feed_age,
             outliers_range,
