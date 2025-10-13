@@ -18,14 +18,22 @@ fn default_http_response_wait_millis() -> u64 {
     HTTP_RESPONSE_WAIT_MILLIS
 }
 
+pub const DEFAULT_PRICE_CACHE_TTL_MS: u64 = 5 * 60 * 1000; // 5 minutes TTL
+
+fn default_price_cache_ttl_millis() -> u64 {
+    DEFAULT_PRICE_CACHE_TTL_MS
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Encode, Decode, TypeInfo, Default)]
-pub struct NodeConfig {
+pub struct PriceProviderConfig {
     #[serde(default = "default_sources")]
     pub sources: BTreeMap<TradePair, Vec<DataSource>>,
     #[serde(default = "default_http_request_timeout_millis")]
     pub http_request_timeout_millis: u64,
     #[serde(default = "default_http_response_wait_millis")]
     pub http_response_wait_millis: u64,
+    #[serde(default = "default_price_cache_ttl_millis")]
+    pub price_cache_ttl_millis: u64,
 }
 
 /// Trade Pair measures price of base (from) currency in terms of quote (to) currency.
