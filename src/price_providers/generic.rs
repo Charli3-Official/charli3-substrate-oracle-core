@@ -1,6 +1,9 @@
 use super::PriceProvider;
 use crate::aggregation::{calculate_median, filter_outliers, SCALING_FACTOR};
-use crate::config::{DataSource, JsonPathElement, NodeConfig, TradePair};
+use crate::config::{
+    DataSource, JsonPathElement, PriceProviderConfig, TradePair, DEFAULT_PRICE_CACHE_TTL_MS,
+};
+use codec::Decode;
 use sp_io::offchain;
 use sp_runtime::offchain::http;
 use sp_runtime::offchain::Duration;
@@ -11,7 +14,7 @@ pub struct GenericApiProvider;
 
 impl GenericApiProvider {
     #[inline]
-    fn load_config() -> Option<NodeConfig> {
+    fn load_config() -> Option<PriceProviderConfig> {
         match sp_io::offchain::local_storage_get(
             sp_core::offchain::StorageKind::PERSISTENT,
             b"node_config",
@@ -21,7 +24,7 @@ impl GenericApiProvider {
                 .ok(),
             _none => {
                 log::warn!("No node config found in storage, using default configuration");
-                Some(NodeConfig::default())
+                Some(PriceProviderConfig::default())
             }
         }
     }
@@ -74,18 +77,80 @@ impl GenericApiProvider {
     const fn validate_price(price: f64) -> bool {
         price > 0.0
     }
+
+    fn fetch_cached_prices(
+        trade_pairs: Vec<TradePair>,
+        optional_config: Option<PriceProviderConfig>,
+    ) -> Vec<(TradePair, f64)> {
+        let price_cache_ttl_ms = optional_config.map_or(DEFAULT_PRICE_CACHE_TTL_MS, |conf| {
+            conf.price_cache_ttl_millis
+        });
+        let mut prices_from_cache = Vec::new();
+        for ticker in trade_pairs {
+            let now = sp_io::offchain::timestamp().unix_millis();
+            match sp_io::offchain::local_storage_get(
+                sp_core::offchain::StorageKind::PERSISTENT,
+                &ticker.to_ticker_bytes(),
+            ) {
+                Some(entry_bytes) => match <(f64, u64)>::decode(&mut &entry_bytes[..]) {
+                    Ok((price, timestamp)) => {
+                        if now - timestamp < price_cache_ttl_ms {
+                            log::info!(
+                                    "Decoded valid cached price for {} from offchain storage: {} (age: {}ms)",
+                                    ticker.to_ticker(),
+                                    price,
+                                    now - timestamp
+                                );
+                            prices_from_cache.push((ticker, price));
+                        } else {
+                            log::warn!(
+                                "Cached price for {} expired (age: {}ms)",
+                                ticker.to_ticker(),
+                                now - timestamp
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to decode price for {}: {:?}", ticker.to_ticker(), e);
+                    }
+                },
+                _none => {
+                    log::warn!(
+                        "Couldn't fetch price from offchain storage for {}",
+                        ticker.to_ticker()
+                    );
+                }
+            }
+        }
+        prices_from_cache
+    }
 }
 
 impl PriceProvider for GenericApiProvider {
-    fn fetch_prices(trade_pairs: Vec<TradePair>) -> Option<Vec<(TradePair, u32)>> {
-        let config = Self::load_config()?;
+    fn fetch_prices(trade_pairs: Vec<TradePair>) -> Vec<(TradePair, u32)> {
+        // Load Node Api Provider Config
+        let optional_config = Self::load_config();
 
+        // Load external prices from cache
+        let external_prices =
+            Self::fetch_cached_prices(trade_pairs.clone(), optional_config.clone());
+
+        // Load Node Api Provider Config
+        let config = match optional_config {
+            Some(cfg) => cfg,
+            _none => {
+                log::warn!("Node Api Provider Config not found — using only external prices");
+                return external_prices
+                    .into_iter()
+                    .map(|(pair, price)| (pair, (price * SCALING_FACTOR as f64) as u32))
+                    .collect();
+            }
+        };
         if config.sources.is_empty() {
-            log::error!("No sources configured in oracle config");
-            return None;
+            log::warn!("No sources configured in oracle config");
         }
 
-        // 1. Start all requests
+        // Start all requests
         let mut requests_sources: Vec<(TradePair, DataSource)> = Vec::new();
         let mut pending_requests: Vec<http::PendingRequest> = Vec::new();
         for pair in trade_pairs.iter() {
@@ -106,7 +171,7 @@ impl PriceProvider for GenericApiProvider {
             }
         }
 
-        // 2. Collect all responses
+        // Collect all responses
         let deadline =
             offchain::timestamp().add(Duration::from_millis(config.http_response_wait_millis));
         let finished: Vec<Result<Result<http::Response, http::Error>, http::PendingRequest>> =
@@ -171,7 +236,15 @@ impl PriceProvider for GenericApiProvider {
             }
         }
 
-        // 3. Aggregate prices
+        // Add external prices
+        for (pair, price) in external_prices {
+            prices
+                .entry(pair)
+                .and_modify(|xs| xs.push(price))
+                .or_insert(vec![price]);
+        }
+
+        // Aggregate prices
         let mut aggregated = Vec::new();
         prices
             .into_iter()
@@ -183,6 +256,6 @@ impl PriceProvider for GenericApiProvider {
                 _none => log::error!("Failed to aggregate prices for trade pair {:?}", pair),
             });
 
-        Some(aggregated)
+        aggregated
     }
 }

@@ -382,7 +382,7 @@ pub mod pallet {
 
     /// pallet auxiliary methods
     impl<T: Config> Pallet<T> {
-        pub fn fetch_prices(tickers: Vec<TradePair>) -> Option<Vec<(TradePair, u32)>> {
+        pub fn fetch_prices(tickers: Vec<TradePair>) -> Vec<(TradePair, u32)> {
             GenericApiProvider::fetch_prices(tickers)
         }
     }
@@ -401,26 +401,28 @@ pub mod pallet {
                         .with_filter(vec![signer_account.clone().public]);
 
                     if let Some(trade_pairs) = TradePairs::<T>::get() {
-                        match Self::fetch_prices(trade_pairs.into()) {
-                            Some(prices) if !prices.is_empty() => {
-                                let result = signer.send_single_signed_transaction(
-                                    &signer_account,
-                                    Call::store_prices { prices },
-                                );
-                                if result.is_some_and(|res| res.is_ok()) {
-                                    log::info!(
-                                        "[{:?}]: submit store price transaction success.",
-                                        signer_account.id
-                                    )
-                                } else {
-                                    log::error!(
-                                        "[{:?}]: submit store price transaction failure.",
-                                        signer_account.id
-                                    )
-                                }
+                        // Store prices tx
+                        let prices = Self::fetch_prices(trade_pairs.into());
+                        if !prices.is_empty() {
+                            let result = signer.send_single_signed_transaction(
+                                &signer_account,
+                                Call::store_prices { prices },
+                            );
+                            if result.is_some_and(|res| res.is_ok()) {
+                                log::info!(
+                                    "[{:?}]: submit store price transaction success.",
+                                    signer_account.id
+                                )
+                            } else {
+                                log::error!(
+                                    "[{:?}]: submit store price transaction failure.",
+                                    signer_account.id
+                                )
                             }
-                            _none => log::error!("Failed to fetch prices."),
+                        } else {
+                            log::error!("Failed to fetch prices.");
                         }
+                        // Sign messages tx
                         match Self::sign_oracle_messages(&signer) {
                             Some(signatures) if !signatures.is_empty() => {
                                 let result = signer.send_single_signed_transaction(
