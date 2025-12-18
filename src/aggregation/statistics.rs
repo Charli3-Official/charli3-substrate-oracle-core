@@ -5,13 +5,14 @@ use sp_std::vec::Vec;
 
 pub type Rational = Ratio<u128>;
 
-pub const SCALING_FACTOR: u128 = 1000;
-const PERCENT: u128 = 100;
+pub const SCALING_FACTOR: u128 = 1_000_000_000;
+pub const PERCENT: u128 = 100;
+pub const PERMILLE: u128 = 1000;
 const IQR_THRESHOLD: usize = 4;
 
 /// Returns weighted (by proximity) average of the two elements closest to the quantile index q * (n - 1)
 /// It will also check for underflow/overflow and list size limitations (>1) and return None in that cases.
-pub fn quantile(sorted_prices: Vec<u32>, q: Rational) -> Option<Rational> {
+pub fn quantile(sorted_prices: Vec<u64>, q: Rational) -> Option<Rational> {
     let length: u128 = sorted_prices.len().try_into().ok()?;
 
     if length <= 1 {
@@ -44,11 +45,11 @@ pub fn quantile(sorted_prices: Vec<u32>, q: Rational) -> Option<Rational> {
 }
 
 pub fn filter_outliers(
-    prices: Vec<u32>,
-    median: u32,
+    prices: Vec<u64>,
+    median: u64,
     outliers_range: u32,
     divergency: u32,
-) -> Option<(Vec<u32>, Vec<u32>)> {
+) -> Option<(Vec<u64>, Vec<u64>)> {
     if prices.len() <= 1 {
         return Some((prices, Vec::new()));
     }
@@ -65,11 +66,11 @@ pub fn filter_outliers(
 }
 
 fn filter_outliers_iqr(
-    prices: Vec<u32>,
-    median: u32,
+    prices: Vec<u64>,
+    median: u64,
     outliers_range: u32,
     divergency: u32,
-) -> Option<(Vec<u32>, Vec<u32>)> {
+) -> Option<(Vec<u64>, Vec<u64>)> {
     let mut sorted_prices = prices.clone();
     sorted_prices.sort_unstable();
 
@@ -89,8 +90,8 @@ fn filter_outliers_iqr(
     let multiplier = Rational::new(outliers_range.into(), PERCENT);
     let fence = multiplier.checked_mul(&iqr)?;
 
-    let lower_bound = (q1 - fence).round().to_integer().max(0) as u32;
-    let upper_bound = (q3 + fence).round().to_integer() as u32;
+    let lower_bound = (q1 - fence).round().to_integer().max(0) as u64;
+    let upper_bound = (q3 + fence).round().to_integer() as u64;
 
     Some(
         prices
@@ -99,7 +100,7 @@ fn filter_outliers_iqr(
     )
 }
 
-fn is_within_divergency(price: u32, median: u32, divergency: u32) -> bool {
+fn is_within_divergency(price: u64, median: u64, divergency: u32) -> bool {
     if median == 0 {
         return price == 0;
     }
@@ -109,6 +110,6 @@ fn is_within_divergency(price: u32, median: u32, divergency: u32) -> bool {
     } else {
         median - price
     };
-    let ratio = (diff as u128 * SCALING_FACTOR) / median as u128;
+    let ratio = (diff as u128 * PERMILLE) / median as u128;
     ratio <= divergency as u128
 }
