@@ -119,6 +119,9 @@ pub mod pallet {
         pub trade_pairs: BoundedVec<TradePair, ConstU32<64>>,
     }
 
+    #[pallet::storage]
+    pub type AuthorizedOracleNodes<T: Config> = StorageMap<_, Identity, T::AccountId, ()>;
+
     /// NodesPrices store latest price for each node indexed by trade pair prefix
     /// about hashers https://docs.substrate.io/build/runtime-storage/#common-substrate-hashers
     #[pallet::storage]
@@ -157,6 +160,7 @@ pub mod pallet {
         pub divergency: u32,
         pub trade_pairs: BoundedVec<TradePair, ConstU32<64>>,
         pub channels_to_trade_pairs: MessagesConfiguration,
+        // TODO authorized oracle nodes
         // Ties `T` to `GenesisConfig` because is needed for `impl<T: Config> BuildGenesisConfig ...`
         pub _marker: PhantomData<T>,
     }
@@ -210,6 +214,12 @@ pub mod pallet {
             channels_to_trade_pairs: MessagesConfiguration,
             block: BlockNumberFor<T>,
         },
+    }
+
+    #[pallet::error]
+    pub enum Error<T> {
+        /// Oracle node is not authorized to submit data
+        UnauthorizedNode,
     }
 
     #[derive(
@@ -312,7 +322,14 @@ pub mod pallet {
         #[pallet::weight((0, Pays::No))]
         pub fn store_prices(origin: OriginFor<T>, prices: Vec<(TradePair, u64)>) -> DispatchResult {
             let who = ensure_signed(origin)?;
+            // Only authorized oracle nodes can submit prices
+            ensure!(
+                AuthorizedOracleNodes::<T>::contains_key(&who),
+                Error::<T>::UnauthorizedNode
+            );
+
             let when = <frame_system::Pallet<T>>::block_number();
+
             prices.iter().for_each(|(tp, price)| {
                 NodesPrices::<T>::insert(tp, &who, (price, when));
             });
@@ -332,6 +349,11 @@ pub mod pallet {
             signatures: Vec<(OracleMessage, T::Signature)>,
         ) -> DispatchResult {
             let who: T::AccountId = ensure_signed(origin)?;
+            ensure!(
+                AuthorizedOracleNodes::<T>::contains_key(&who),
+                Error::<T>::UnauthorizedNode
+            );
+
             let when = <frame_system::Pallet<T>>::block_number();
 
             signatures
@@ -382,6 +404,25 @@ pub mod pallet {
 
             Ok(())
         }
+
+        #[pallet::call_index(3)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn sudo_register_oracle_node(
+            origin: OriginFor<T>,
+            oracle_account: T::AccountId,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+
+            // Create the account in storage with zero balance
+            frame_system::Pallet::<T>::inc_providers(&oracle_account);
+
+            // Authorize it as an oracle node
+            AuthorizedOracleNodes::<T>::insert(&oracle_account, ());
+
+            Ok(())
+        }
+
+        // TODO pub fn deregister_oracle_node(
     }
 
     /// pallet auxiliary methods
@@ -401,6 +442,10 @@ pub mod pallet {
             let mut acc_list = Signer::<T, T::AuthorityId>::keystore_accounts();
             match acc_list.next() {
                 Some(signer_account) if acc_list.next().is_none() => {
+                    // TODO
+                    // if !AuthorizedOracleNodes::<T>::contains_key(&signer_account) {
+                    //     return Err("Oracle node not authorized".into());
+                    // }
                     let signer = Signer::<T, T::AuthorityId>::all_accounts()
                         .with_filter(vec![signer_account.clone().public]);
 
