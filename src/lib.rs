@@ -405,6 +405,7 @@ pub mod pallet {
             Ok(())
         }
 
+        // TODO batch multiple register / deregister operations together
         #[pallet::call_index(3)]
         #[pallet::weight((0, Pays::No))]
         pub fn sudo_register_oracle_node(
@@ -422,7 +423,30 @@ pub mod pallet {
             Ok(())
         }
 
-        // TODO pub fn deregister_oracle_node(
+        #[pallet::call_index(4)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn sudo_deregister_oracle_node(
+            origin: OriginFor<T>,
+            oracle_account: T::AccountId,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+
+            // Remove from authorized nodes
+            AuthorizedOracleNodes::<T>::remove(&oracle_account);
+
+            // Attempt to remove (reap) the account from storage
+            // If it fails (e.g., account still has references), log it but continue
+            // The account is already deauthorized, so it can't submit oracle data
+            if let Err(e) = frame_system::Pallet::<T>::dec_providers(&oracle_account) {
+                log::error!(
+                    "Could not fully remove account {:?} from storage: {:?}. Account is deauthorized but may still exist in state.",
+                    oracle_account,
+                    e
+                );
+            }
+
+            Ok(())
+        }
     }
 
     /// pallet auxiliary methods
