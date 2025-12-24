@@ -140,7 +140,7 @@ pub mod pallet {
     #[pallet::storage]
     pub type SignatureStorage<T: Config> = StorageDoubleMap<
         Hasher1 = Twox64Concat,
-        Key1 = u64,
+        Key1 = (ChannelId, u64),
         Hasher2 = Identity,
         Key2 = T::AccountId,
         Value = [u8; 64],
@@ -343,7 +343,11 @@ pub mod pallet {
                     let signature_encoded: [u8; 64] = signature_bytes
                         .try_into()
                         .expect("signature buffer should be exactly 64 bytes");
-                    SignatureStorage::<T>::insert(message.timestamp, &who, signature_encoded);
+                    SignatureStorage::<T>::insert(
+                        (message.channel_id, message.timestamp),
+                        &who,
+                        signature_encoded,
+                    );
                 });
 
             Self::deposit_event(Event::StoredSignatures {
