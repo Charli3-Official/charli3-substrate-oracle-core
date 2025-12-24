@@ -155,12 +155,12 @@ pub mod pallet {
     #[pallet::genesis_config]
     pub struct GenesisConfig<T: Config> {
         pub min_nodes_for_trusted_aggregation: u32,
+        pub authorized_nodes: BoundedVec<T::AccountId, ConstU32<32>>,
         pub feed_age: u16,
         pub outliers_range: u32,
         pub divergency: u32,
         pub trade_pairs: BoundedVec<TradePair, ConstU32<64>>,
         pub channels_to_trade_pairs: MessagesConfiguration,
-        // TODO authorized oracle nodes
         // Ties `T` to `GenesisConfig` because is needed for `impl<T: Config> BuildGenesisConfig ...`
         pub _marker: PhantomData<T>,
     }
@@ -169,6 +169,7 @@ pub mod pallet {
         fn default() -> Self {
             Self {
                 min_nodes_for_trusted_aggregation: Default::default(),
+                authorized_nodes: Default::default(),
                 feed_age: Default::default(),
                 outliers_range: Default::default(),
                 divergency: Default::default(),
@@ -188,6 +189,9 @@ pub mod pallet {
             <Divergency<T>>::put(&self.divergency);
             <TradePairs<T>>::put(&self.trade_pairs);
             <ChannelsToTradePairs<T>>::put(&self.channels_to_trade_pairs);
+            for oracle_account in &self.authorized_nodes {
+                AuthorizedOracleNodes::<T>::insert(oracle_account, ());
+            }
         }
     }
 
@@ -406,6 +410,7 @@ pub mod pallet {
         }
 
         // TODO batch multiple register / deregister operations together
+        // TODO deposit_event
         #[pallet::call_index(3)]
         #[pallet::weight((0, Pays::No))]
         pub fn sudo_register_oracle_node(
