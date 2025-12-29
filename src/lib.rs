@@ -409,7 +409,6 @@ pub mod pallet {
             Ok(())
         }
 
-        // TODO batch multiple register / deregister operations together
         // TODO deposit_event
         #[pallet::call_index(3)]
         #[pallet::weight((0, Pays::No))]
@@ -471,10 +470,10 @@ pub mod pallet {
             let mut acc_list = Signer::<T, T::AuthorityId>::keystore_accounts();
             match acc_list.next() {
                 Some(signer_account) if acc_list.next().is_none() => {
-                    // TODO
-                    // if !AuthorizedOracleNodes::<T>::contains_key(&signer_account) {
-                    //     return Err("Oracle node not authorized".into());
-                    // }
+                    if !AuthorizedOracleNodes::<T>::contains_key(&signer_account.id) {
+                        log::error!("Oracle node not authorized.");
+                        return;
+                    }
                     let signer = Signer::<T, T::AuthorityId>::all_accounts()
                         .with_filter(vec![signer_account.clone().public]);
 
