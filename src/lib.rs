@@ -100,6 +100,7 @@ pub mod pallet {
     #[pallet::storage]
     pub type TradePairs<T> = StorageValue<_, BoundedVec<TradePair, ConstU32<64>>>;
 
+    // ChannelId === PolicyId on Cardano (PolicyId of Aggregation State NFT beacon)
     pub type ChannelId = BoundedVec<u8, ConstU32<64>>;
 
     pub type MessagesConfiguration =
