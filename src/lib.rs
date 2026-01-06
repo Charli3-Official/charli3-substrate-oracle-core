@@ -252,6 +252,9 @@ pub mod pallet {
             // Start main array
             encoder.begin_array().unwrap();
 
+            // --- channel_id ---
+            encoder.bytes(&self.channel_id).unwrap(); // encode bytestring
+
             // --- prices_and_age ---
             encoder.begin_array().unwrap();
             for maybe_entry in &self.prices_and_age {
