@@ -1,5 +1,6 @@
-use codec::alloc::string::{String, ToString};
-use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
+extern crate alloc;
+use alloc::string::{String, ToString};
+use parity_scale_codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use frame_support::pallet_prelude::{BoundedVec, ConstU32};
 use scale_info::TypeInfo;
 use serde::{Deserialize, Serialize};
@@ -181,3 +182,21 @@ fn default_sources() -> BTreeMap<TradePair, Vec<DataSource>> {
         }],
     )])
 }
+
+// ChannelId === PolicyId on Cardano (PolicyId of Aggregation State NFT beacon)
+pub type ChannelId = BoundedVec<u8, ConstU32<64>>;
+
+pub type MessagesConfiguration =
+    BoundedVec<(ChannelId, BoundedVec<u16, ConstU32<64>>), ConstU32<16>>;
+
+#[derive(
+    Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, DecodeWithMemTracking, TypeInfo,
+)]
+pub struct ConsensusConfiguration {
+    pub min_nodes_for_trusted_aggregation: u32,
+    pub feed_age: u16,
+    pub outliers_range: u32,
+    pub divergency: u32,
+    pub trade_pairs: BoundedVec<TradePair, ConstU32<64>>,
+}
+

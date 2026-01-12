@@ -1,10 +1,11 @@
 use super::PriceProvider;
 use crate::aggregation::statistics::Rational;
 use crate::aggregation::{calculate_median, SCALING_FACTOR};
-use crate::config::{
-    DataSource, JsonPathElement, PriceProviderConfig, TradePair, DEFAULT_PRICE_CACHE_TTL_MS,
+use crate::types::config::{
+    DataSource, JsonPathElement, PriceProviderConfig, DEFAULT_PRICE_CACHE_TTL_MS,
 };
-use codec::Decode;
+use crate::types::TradePair;
+use parity_scale_codec::Decode;
 use sp_io::offchain;
 use sp_runtime::offchain::http;
 use sp_runtime::offchain::Duration;
@@ -87,7 +88,7 @@ impl GenericApiProvider {
             let now = sp_io::offchain::timestamp().unix_millis();
             match sp_io::offchain::local_storage_get(
                 sp_core::offchain::StorageKind::PERSISTENT,
-                &ticker.to_ticker_bytes(),
+                &ticker.to_ticker_bytes()[..],
             ) {
                 Some(entry_bytes) => match <(f64, u64)>::decode(&mut &entry_bytes[..]) {
                     Ok((price, timestamp)) => {
@@ -236,7 +237,7 @@ impl PriceProvider for GenericApiProvider {
                     }) {
                         prices
                             .entry(pair)
-                            .and_modify(|xs| xs.push(price))
+                            .and_modify(|xs: &mut Vec<f64>| xs.push(price))
                             .or_insert(vec![price]);
                     }
                 }
@@ -247,7 +248,7 @@ impl PriceProvider for GenericApiProvider {
         for (pair, price) in external_prices {
             prices
                 .entry(pair)
-                .and_modify(|xs| xs.push(price))
+                .and_modify(|xs: &mut Vec<f64>| xs.push(price))
                 .or_insert(vec![price]);
         }
 
