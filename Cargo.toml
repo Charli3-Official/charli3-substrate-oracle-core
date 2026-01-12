@@ -1,13 +1,13 @@
 [package]
 name = "charli3-oracle-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2021"
 license = "BUSL-1.1"
 authors = ["Charli3 Team <info@charli3.io>"]
 description = "Core oracle types, aggregation algorithms, and price providers for Charli3"
 repository = "https://github.com/Charli3-Official/charli3-substrate-oracle-core"
 keywords = ["oracle", "substrate", "cardano", "defi"]
-categories = ["cryptography::cryptocurrencies"]
+categories = ["finance", "cryptography::cryptocurrencies"]
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
