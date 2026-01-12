@@ -37,7 +37,7 @@ hex = { version = "0.4", default-features = false, features = ["alloc"] }
 # Logging
 log = { version = "0.4.22", default-features = false }
 
-frame-support = { version = "40.1.0", default-features = false, optional = true }
+frame-support = { version = "40.1.0", default-features = false }
 frame-system = { version = "40.1.0", default-features = false, optional = true }
 pallet-timestamp = { version = "39.0.0", default-features = false, optional = true }
 
@@ -57,20 +57,19 @@ std = [
     "num-traits/std",
     "hex/std",
     "log/std",
-    "frame-support?/std",
+    "frame-support/std",
     "frame-system?/std",
     "pallet-timestamp?/std",
 ]
 
 # Enable full pallet functionality (storage, extrinsics, etc.)
 pallet = [
-    "frame-support",
     "frame-system",
     "pallet-timestamp",
 ]
 
 try-runtime = [
-    "frame-support?/try-runtime",
+    "frame-support/try-runtime",
     "frame-system?/try-runtime",
     "pallet-timestamp?/try-runtime",
 ]

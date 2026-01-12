@@ -1,7 +1,7 @@
 extern crate alloc;
 use alloc::string::{String, ToString};
-use parity_scale_codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use frame_support::pallet_prelude::{BoundedVec, ConstU32};
+use parity_scale_codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
 use serde::{Deserialize, Serialize};
 use sp_std::collections::btree_map::BTreeMap;
@@ -199,4 +199,3 @@ pub struct ConsensusConfiguration {
     pub divergency: u32,
     pub trade_pairs: BoundedVec<TradePair, ConstU32<64>>,
 }
-

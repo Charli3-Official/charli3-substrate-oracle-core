@@ -1,6 +1,5 @@
 pub use pallet::*;
 
-use parity_scale_codec::{DecodeWithMemTracking, Encode};
 use frame_support::pallet_prelude::{BoundedVec, ConstU32};
 use frame_system::{
     offchain::{SignMessage, Signer, SigningTypes},
@@ -8,6 +7,7 @@ use frame_system::{
 };
 use hex::ToHex;
 use pallet_timestamp::{self as timestamp};
+use parity_scale_codec::{DecodeWithMemTracking, Encode};
 use scale_info::prelude::{vec, vec::Vec};
 use sp_core::crypto::KeyTypeId;
 use sp_runtime::SaturatedConversion;
@@ -17,8 +17,8 @@ use sp_std::collections::btree_map::BTreeMap;
 pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"orac");
 
 use crate::aggregation::{calculate_median, filter_outliers};
-use crate::types::{TradePair, ConsensusConfiguration, MessagesConfiguration, ChannelId};
 use crate::price_providers::{GenericApiProvider, PriceProvider};
+use crate::types::{ChannelId, ConsensusConfiguration, MessagesConfiguration, TradePair};
 
 pub mod crypto {
     use super::KEY_TYPE;
@@ -57,10 +57,10 @@ pub mod pallet {
         pallet_prelude::*,
     };
     use minicbor::encode::Encoder;
+    use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
     use scale_info::{prelude::fmt, TypeInfo};
     use sp_core::hashing::blake2_256;
     use sp_runtime::sp_std::str;
-    use parity_scale_codec::{Encode, Decode, MaxEncodedLen};
 
     #[pallet::pallet]
     pub struct Pallet<T>(_);

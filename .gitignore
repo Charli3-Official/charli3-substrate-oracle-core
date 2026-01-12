@@ -1,0 +1,15 @@
+# Build artifacts
+/target/
+
+# Cargo lockfile (not needed for libraries)
+Cargo.lock
+
+# Editor and tooling metadata
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Rustfmt backups
+**/*.rs.bk
