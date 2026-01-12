@@ -2,7 +2,8 @@
 name = "charli3-oracle-core"
 version = "0.1.0"
 edition = "2021"
-license = "Apache-2.0"
+license = "BUSL-1.1"
+authors = ["Charli3 Team <info@charli3.io>"]
 description = "Core oracle types, aggregation algorithms, and price providers for Charli3"
 repository = "https://github.com/Charli3-Official/charli3-substrate-oracle-core"
 keywords = ["oracle", "substrate", "cardano", "defi"]
