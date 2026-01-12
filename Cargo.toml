@@ -8,6 +8,17 @@ description = "Core oracle types, aggregation algorithms, and price providers fo
 repository = "https://github.com/Charli3-Official/charli3-substrate-oracle-core"
 keywords = ["oracle", "substrate", "cardano", "defi"]
 categories = ["finance", "cryptography::cryptocurrencies"]
+documentation = "https://docs.rs/charli3-oracle-core"
+homepage = "https://charli3.io"
+readme = "README.md"
+exclude = [
+    ".github/",
+    "tests/",
+    "benches/",
+]
+
+[badges]
+maintenance = { status = "actively-developed" }
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
