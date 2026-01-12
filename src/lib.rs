@@ -100,6 +100,7 @@ pub mod pallet {
     #[pallet::storage]
     pub type TradePairs<T> = StorageValue<_, BoundedVec<TradePair, ConstU32<64>>>;
 
+    // ChannelId === PolicyId on Cardano (PolicyId of Aggregation State NFT beacon)
     pub type ChannelId = BoundedVec<u8, ConstU32<64>>;
 
     pub type MessagesConfiguration =
@@ -118,6 +119,9 @@ pub mod pallet {
         pub divergency: u32,
         pub trade_pairs: BoundedVec<TradePair, ConstU32<64>>,
     }
+
+    #[pallet::storage]
+    pub type AuthorizedOracleNodes<T: Config> = StorageMap<_, Identity, T::AccountId, ()>;
 
     /// NodesPrices store latest price for each node indexed by trade pair prefix
     /// about hashers https://docs.substrate.io/build/runtime-storage/#common-substrate-hashers
@@ -152,6 +156,7 @@ pub mod pallet {
     #[pallet::genesis_config]
     pub struct GenesisConfig<T: Config> {
         pub min_nodes_for_trusted_aggregation: u32,
+        pub authorized_nodes: BoundedVec<T::AccountId, ConstU32<32>>,
         pub feed_age: u16,
         pub outliers_range: u32,
         pub divergency: u32,
@@ -165,6 +170,7 @@ pub mod pallet {
         fn default() -> Self {
             Self {
                 min_nodes_for_trusted_aggregation: Default::default(),
+                authorized_nodes: Default::default(),
                 feed_age: Default::default(),
                 outliers_range: Default::default(),
                 divergency: Default::default(),
@@ -184,6 +190,9 @@ pub mod pallet {
             <Divergency<T>>::put(&self.divergency);
             <TradePairs<T>>::put(&self.trade_pairs);
             <ChannelsToTradePairs<T>>::put(&self.channels_to_trade_pairs);
+            for oracle_account in &self.authorized_nodes {
+                AuthorizedOracleNodes::<T>::insert(oracle_account, ());
+            }
         }
     }
 
@@ -210,6 +219,20 @@ pub mod pallet {
             channels_to_trade_pairs: MessagesConfiguration,
             block: BlockNumberFor<T>,
         },
+        AddedOracleNode {
+            which: T::AccountId,
+            block: BlockNumberFor<T>,
+        },
+        RemovedOracleNode {
+            which: T::AccountId,
+            block: BlockNumberFor<T>,
+        },
+    }
+
+    #[pallet::error]
+    pub enum Error<T> {
+        /// Oracle node is not authorized to submit data
+        UnauthorizedNode,
     }
 
     #[derive(
@@ -315,7 +338,14 @@ pub mod pallet {
         #[pallet::weight((0, Pays::No))]
         pub fn store_prices(origin: OriginFor<T>, prices: Vec<(TradePair, u64)>) -> DispatchResult {
             let who = ensure_signed(origin)?;
+            // Only authorized oracle nodes can submit prices
+            ensure!(
+                AuthorizedOracleNodes::<T>::contains_key(&who),
+                Error::<T>::UnauthorizedNode
+            );
+
             let when = <frame_system::Pallet<T>>::block_number();
+
             prices.iter().for_each(|(tp, price)| {
                 NodesPrices::<T>::insert(tp, &who, (price, when));
             });
@@ -335,6 +365,11 @@ pub mod pallet {
             signatures: Vec<(OracleMessage, T::Signature)>,
         ) -> DispatchResult {
             let who: T::AccountId = ensure_signed(origin)?;
+            ensure!(
+                AuthorizedOracleNodes::<T>::contains_key(&who),
+                Error::<T>::UnauthorizedNode
+            );
+
             let when = <frame_system::Pallet<T>>::block_number();
 
             signatures
@@ -389,6 +424,60 @@ pub mod pallet {
 
             Ok(())
         }
+
+        #[pallet::call_index(3)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn sudo_register_oracle_node(
+            origin: OriginFor<T>,
+            oracle_account: T::AccountId,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            let when = <frame_system::Pallet<T>>::block_number();
+
+            // Create the account in storage with zero balance
+            frame_system::Pallet::<T>::inc_providers(&oracle_account);
+
+            // Authorize it as an oracle node
+            AuthorizedOracleNodes::<T>::insert(&oracle_account, ());
+
+            Self::deposit_event(Event::AddedOracleNode {
+                which: oracle_account,
+                block: when,
+            });
+
+            Ok(())
+        }
+
+        #[pallet::call_index(4)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn sudo_deregister_oracle_node(
+            origin: OriginFor<T>,
+            oracle_account: T::AccountId,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            let when = <frame_system::Pallet<T>>::block_number();
+
+            // Remove from authorized nodes
+            AuthorizedOracleNodes::<T>::remove(&oracle_account);
+
+            // Attempt to remove (reap) the account from storage
+            // If it fails (e.g., account still has references), log it but continue
+            // The account is already deauthorized, so it can't submit oracle data
+            if let Err(e) = frame_system::Pallet::<T>::dec_providers(&oracle_account) {
+                log::error!(
+                    "Could not fully remove account {:?} from storage: {:?}. Account is deauthorized but may still exist in state.",
+                    oracle_account,
+                    e
+                );
+            }
+
+            Self::deposit_event(Event::RemovedOracleNode {
+                which: oracle_account,
+                block: when,
+            });
+
+            Ok(())
+        }
     }
 
     /// pallet auxiliary methods
@@ -408,6 +497,10 @@ pub mod pallet {
             let mut acc_list = Signer::<T, T::AuthorityId>::keystore_accounts();
             match acc_list.next() {
                 Some(signer_account) if acc_list.next().is_none() => {
+                    if !AuthorizedOracleNodes::<T>::contains_key(&signer_account.id) {
+                        log::error!("Oracle node not authorized.");
+                        return;
+                    }
                     let signer = Signer::<T, T::AuthorityId>::all_accounts()
                         .with_filter(vec![signer_account.clone().public]);
 
