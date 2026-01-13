@@ -545,7 +545,8 @@ pub mod pallet {
             }) = Self::get_oracle_config()
             {
                 // Get timestamp in milliseconds
-                let timestamp = timestamp::Pallet::<T>::get().saturated_into::<u64>();
+                let timestamp_ms = timestamp::Pallet::<T>::get().saturated_into::<u64>();
+                let timestamp = (timestamp_ms / 1000) * 1000; // Round to nearest second
 
                 let prices_age_and_rewards = trade_pairs
                     .into_iter()
