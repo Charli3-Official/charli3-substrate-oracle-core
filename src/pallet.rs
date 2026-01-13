@@ -7,7 +7,7 @@ use frame_system::{
 };
 use hex::ToHex;
 use pallet_timestamp::{self as timestamp};
-use parity_scale_codec::{DecodeWithMemTracking, Encode};
+use parity_scale_codec::Encode;
 use scale_info::prelude::{vec, vec::Vec};
 use sp_core::crypto::KeyTypeId;
 use sp_runtime::SaturatedConversion;
@@ -214,7 +214,7 @@ pub mod pallet {
     }
 
     #[derive(
-        Clone, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo,
+        Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo,
     )]
     /// This is the aggregated data after oracle consensus
     pub struct AggregationState {
@@ -227,7 +227,7 @@ pub mod pallet {
     }
 
     #[derive(
-        Clone, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo,
+        Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo,
     )]
     /// This is the aggregated Oracle Message
     pub struct OracleMessage {

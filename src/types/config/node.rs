@@ -1,7 +1,7 @@
 extern crate alloc;
 use alloc::string::{String, ToString};
 use frame_support::pallet_prelude::{BoundedVec, ConstU32};
-use parity_scale_codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
+use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
 use serde::{Deserialize, Serialize};
 use sp_std::collections::btree_map::BTreeMap;
@@ -53,7 +53,6 @@ impl Default for PriceProviderConfig {
 #[derive(
     Clone,
     Encode,
-    DecodeWithMemTracking,
     Decode,
     Eq,
     PartialEq,
@@ -190,7 +189,7 @@ pub type MessagesConfiguration =
     BoundedVec<(ChannelId, BoundedVec<u16, ConstU32<64>>), ConstU32<16>>;
 
 #[derive(
-    Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, DecodeWithMemTracking, TypeInfo,
+    Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo,
 )]
 pub struct ConsensusConfiguration {
     pub min_nodes_for_trusted_aggregation: u32,
