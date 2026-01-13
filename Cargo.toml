@@ -1,6 +1,6 @@
 [package]
 name = "charli3-oracle-core"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 edition = "2021"
 license = "BUSL-1.1"
 authors = ["Charli3 Team <info@charli3.io>"]
