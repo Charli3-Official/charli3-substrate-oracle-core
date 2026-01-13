@@ -1,8 +1,7 @@
 [package]
 name = "charli3-oracle-core"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 edition = "2024"
-
 license = "BUSL-1.1"
 authors = ["Charli3 Team <info@charli3.io>"]
 description = "Core oracle types, aggregation algorithms, and price providers for Charli3"
