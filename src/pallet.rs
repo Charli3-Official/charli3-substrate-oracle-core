@@ -657,7 +657,7 @@ impl<T: Config> Pallet<T> {
 
     fn get_previous_median(trade_pair_index: usize) -> Option<(u64, u16)> {
         let aggregation_state = Aggregation::<T>::get()?;
-        let (price, age, _) = aggregation_state.prices_age_and_rewards[trade_pair_index].clone()?;
+        let (price, age, _) = aggregation_state.prices_age_and_rewards.get(trade_pair_index)?.clone()?;
         Some((price, age + 1))
     }
 
