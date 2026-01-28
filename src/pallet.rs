@@ -472,65 +472,62 @@ pub mod pallet {
         // NodePrices storage
         fn offchain_worker(_n: BlockNumberFor<T>) {
             log::info!("Starting offchain worker to query price from configured sources");
-            let mut acc_list = Signer::<T, T::AuthorityId>::keystore_accounts();
-            match acc_list.next() {
-                Some(signer_account) if acc_list.next().is_none() => {
-                    if !AuthorizedOracleNodes::<T>::contains_key(&signer_account.id) {
-                        log::error!("Oracle node not authorized.");
-                        return;
-                    }
-                    let signer = Signer::<T, T::AuthorityId>::all_accounts()
-                        .with_filter(vec![signer_account.clone().public]);
+            let acc_list = Signer::<T, T::AuthorityId>::keystore_accounts();
+            let authorized_account =
+                acc_list.into_iter().find(|acc| AuthorizedOracleNodes::<T>::contains_key(&acc.id));
 
-                    if let Some(trade_pairs) = TradePairs::<T>::get() {
-                        // Store prices tx
-                        let prices = Self::fetch_prices(trade_pairs.into());
-                        if !prices.is_empty() {
+            if let Some(signer_account) = authorized_account {
+                let signer = Signer::<T, T::AuthorityId>::all_accounts()
+                    .with_filter(vec![signer_account.clone().public]);
+
+                if let Some(trade_pairs) = TradePairs::<T>::get() {
+                    // Store prices tx
+                    let prices = Self::fetch_prices(trade_pairs.into());
+                    if !prices.is_empty() {
+                        let result = signer.send_single_signed_transaction(
+                            &signer_account,
+                            Call::store_prices { prices },
+                        );
+                        if result.is_some_and(|res| res.is_ok()) {
+                            log::info!(
+                                "[{:?}]: submit store price transaction success.",
+                                signer_account.id
+                            )
+                        } else {
+                            log::error!(
+                                "[{:?}]: submit store price transaction failure.",
+                                signer_account.id
+                            )
+                        }
+                    } else {
+                        log::error!("Failed to fetch prices.");
+                    }
+                    // Sign messages tx
+                    match Self::sign_oracle_messages(&signer) {
+                        Some(signatures) if !signatures.is_empty() => {
                             let result = signer.send_single_signed_transaction(
                                 &signer_account,
-                                Call::store_prices { prices },
+                                Call::store_signatures { signatures },
                             );
                             if result.is_some_and(|res| res.is_ok()) {
                                 log::info!(
-                                    "[{:?}]: submit store price transaction success.",
+                                    "[{:?}]: submit store signatures transaction success.",
                                     signer_account.id
                                 )
                             } else {
                                 log::error!(
-                                    "[{:?}]: submit store price transaction failure.",
+                                    "[{:?}]: submit store signatures transaction failure.",
                                     signer_account.id
                                 )
                             }
-                        } else {
-                            log::error!("Failed to fetch prices.");
                         }
-                        // Sign messages tx
-                        match Self::sign_oracle_messages(&signer) {
-                            Some(signatures) if !signatures.is_empty() => {
-                                let result = signer.send_single_signed_transaction(
-                                    &signer_account,
-                                    Call::store_signatures { signatures },
-                                );
-                                if result.is_some_and(|res| res.is_ok()) {
-                                    log::info!(
-                                        "[{:?}]: submit store signatures transaction success.",
-                                        signer_account.id
-                                    )
-                                } else {
-                                    log::error!(
-                                        "[{:?}]: submit store signatures transaction failure.",
-                                        signer_account.id
-                                    )
-                                }
-                            }
-                            _none => log::error!("Couldn't sign oracle messages."),
-                        }
-                    } else {
-                        log::error!("Error fetching trade pairs configuration.")
+                        _none => log::error!("Couldn't sign oracle messages."),
                     }
+                } else {
+                    log::error!("Error fetching trade pairs configuration.")
                 }
-                Some(_accounts) => log::error!("More than one account. Expected only one"),
-                _none => log::error!("No account available for oracle"),
+            } else {
+                log::error!("No authorized account available for oracle in keystore");
             }
         }
 
