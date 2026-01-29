@@ -170,14 +170,9 @@ fn default_sources() -> BTreeMap<TradePair, Vec<DataSource>> {
     BTreeMap::from([(
         TradePair::from_ticker("ADA-USD"),
         vec![DataSource {
-            name: String::from("bitget"),
-            url: String::from(
-                "https://api.bitget.com/api/spot/v1/market/ticker?symbol=ADAUSDC_SPBL",
-            ),
-            json_path: vec![
-                JsonPathElement::Key(String::from("data")),
-                JsonPathElement::Key(String::from("close")),
-            ],
+            name: String::from("binance"),
+            url: String::from("https://api.binance.com/api/v3/ticker/price?symbol=ADAUSDT"),
+            json_path: vec![JsonPathElement::Key(String::from("price"))],
             headers: Vec::new(),
         }],
     )])
