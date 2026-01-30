@@ -24,9 +24,9 @@ pub mod crypto {
     use super::KEY_TYPE;
     use sp_core::ed25519::Signature as Ed25519Signature;
     use sp_runtime::{
+        MultiSignature, MultiSigner,
         app_crypto::{app_crypto, ed25519},
         traits::Verify,
-        MultiSignature, MultiSigner,
     };
     app_crypto!(ed25519, KEY_TYPE);
 
@@ -58,7 +58,7 @@ pub mod pallet {
     };
     use minicbor::encode::Encoder;
     use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
-    use scale_info::{prelude::fmt, TypeInfo};
+    use scale_info::{TypeInfo, prelude::fmt};
     use sp_core::hashing::blake2_256;
     use sp_runtime::sp_std::str;
 
@@ -657,7 +657,10 @@ impl<T: Config> Pallet<T> {
 
     fn get_previous_median(trade_pair_index: usize) -> Option<(u64, u16)> {
         let aggregation_state = Aggregation::<T>::get()?;
-        let (price, age, _) = aggregation_state.prices_age_and_rewards[trade_pair_index].clone()?;
+        let (price, age, _) = aggregation_state
+            .prices_age_and_rewards
+            .get(trade_pair_index)?
+            .clone()?;
         Some((price, age + 1))
     }
 
