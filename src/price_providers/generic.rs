@@ -1,14 +1,14 @@
 use super::PriceProvider;
 use crate::aggregation::statistics::Rational;
-use crate::aggregation::{calculate_median, SCALING_FACTOR};
-use crate::types::config::{
-    DataSource, JsonPathElement, PriceProviderConfig, DEFAULT_PRICE_CACHE_TTL_MS,
-};
+use crate::aggregation::{SCALING_FACTOR, calculate_median};
 use crate::types::TradePair;
+use crate::types::config::{
+    DEFAULT_PRICE_CACHE_TTL_MS, DataSource, JsonPathElement, PriceProviderConfig,
+};
 use parity_scale_codec::Decode;
 use sp_io::offchain;
-use sp_runtime::offchain::http;
 use sp_runtime::offchain::Duration;
+use sp_runtime::offchain::http;
 use sp_runtime::sp_std::{vec, vec::Vec};
 use sp_std::collections::btree_map::BTreeMap;
 
@@ -94,11 +94,11 @@ impl GenericApiProvider {
                     Ok((price, timestamp)) => {
                         if now - timestamp < price_cache_ttl_ms {
                             log::info!(
-                                    "Decoded valid cached price for {} from offchain storage: {} (age: {}ms)",
-                                    ticker.to_ticker(),
-                                    price,
-                                    now - timestamp
-                                );
+                                "Decoded valid cached price for {} from offchain storage: {} (age: {}ms)",
+                                ticker.to_ticker(),
+                                price,
+                                now - timestamp
+                            );
                             prices_from_cache.push((ticker, price));
                         } else {
                             log::warn!(
