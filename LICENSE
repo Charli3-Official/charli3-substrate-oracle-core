@@ -5,11 +5,35 @@ License text copyright (c) 2017 MariaDB Corporation Ab, All Rights Reserved.
 
 Parameters
 
-Licensor:                 Charli3 Official
+Licensor:                 Charli3 Oracles (C3 Oracle International Ltd.)
 Licensed Work:            charli3-oracle-core
-Additional Use Grant:     None
-Change Date:              2030-01-12
-Change License:           GNU Affero General Public License v3.0
+Additional Use Grant:     
+You may use, modify, and create derivative works of the Licensed Work
+for the purpose of:
+
+(a) Developing, testing, and running oracle networks that interact with
+    the Charli3 hosted partner-chain service;
+
+(b) Developing, running, and distributing oracle templates, bridge
+    logic, integrations, and data adapters (“Extensions”);
+
+(c) Selling or freely distributing Extensions, including Extensions
+    that require limited modifications to the Licensed Work, provided
+    such modifications do not enable or constitute a competing
+    hosted oracle network, partner-chain, or oracle-network-as-a-service
+    offering.
+
+You may not use the Licensed Work, in whole or in part, to:
+
+(a) Operate or provide a self-hosted or third-party hosted partner-chain
+    or oracle network service that competes with Charli3 Oracles;
+
+(b) Offer the Licensed Work as a commercial hosted service, platform,
+    or managed oracle network without a commercial license from the
+    Licensor.
+
+Change Date:              18 months after the date of each version’s first public release.
+Change License:           MIT License
 
 For information about alternative licensing arrangements for the Software,
 please contact: sales@charli3.io

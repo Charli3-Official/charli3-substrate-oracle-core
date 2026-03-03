@@ -1,4 +1,4 @@
-use super::statistics::{quantile, Rational};
+use super::statistics::{Rational, quantile};
 use sp_std::vec::Vec;
 
 /// It will check for underflow/overflow and list size limitations (>0) and return None in that cases.

@@ -24,3 +24,34 @@ The crate supports the following features:
 
 - `std`: Enables standard library support. Enabled by default.
 - `pallet`: Enables Substrate `frame-support` dependencies. Use this when integrating into a Substrate pallet.
+
+## License Terms
+
+Terms
+
+The Licensed Work is provided under the Business Source License 1.1.
+On the Change Date, the Licensed Work will automatically be licensed
+under the MIT License.
+
+This license does not grant rights to use Charli3 Oracles trademarks,
+logos, or branding.
+
+
+What this allows:
+
+- ✅ Full source visibility and auditability
+- ✅ Internal and production use with the Charli3 hosted partner-chain
+- ✅ Development of oracle templates, bridges, and data adapters
+- ✅ Commercial sale of templates and adapters on the Charli3 marketplace
+- ✅ Limited modification of the core to support extensions
+
+What this restricts:
+
+- ❌ Self-hosting or operating a competing partner-chain or oracle network
+- ❌ Offering oracle-network-as-a-service using this software without a
+  commercial license
+
+Each release automatically becomes MIT licensed after 18 months.
+
+For commercial licensing inquiries:
+📧 sales@charli3.io
