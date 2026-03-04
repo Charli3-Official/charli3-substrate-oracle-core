@@ -12,7 +12,7 @@ pub mod types;
 pub use aggregation::{calculate_median, filter_outliers};
 pub use encoding::{CardanoCbor, CborHashable};
 pub use price_providers::{GenericApiProvider, PriceProvider};
-pub use types::{ChannelId, ConsensusConfiguration, MessagesConfiguration, TradePair};
+pub use types::{ChannelId, ConsensusConfiguration, MessagesConfiguration, RewardConfiguration, TradePair};
 
 // Pallet module (only when pallet feature enabled)
 #[cfg(feature = "pallet")]

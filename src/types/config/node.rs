@@ -194,3 +194,11 @@ pub struct ConsensusConfiguration {
     pub divergency: u32,
     pub trade_pairs: BoundedVec<TradePair, ConstU32<64>>,
 }
+
+#[derive(
+    Clone, Encode, Decode, Eq, PartialEq, Debug, MaxEncodedLen, DecodeWithMemTracking, TypeInfo,
+)]
+pub struct RewardConfiguration {
+    pub reward_policy_id: ChannelId,
+    pub reward_asset_name: BoundedVec<u8, ConstU32<64>>,
+}

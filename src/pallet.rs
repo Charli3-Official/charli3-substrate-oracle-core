@@ -18,7 +18,7 @@ pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"orac");
 
 use crate::aggregation::{calculate_median, filter_outliers};
 use crate::price_providers::{GenericApiProvider, PriceProvider};
-use crate::types::{ChannelId, ConsensusConfiguration, MessagesConfiguration, TradePair};
+use crate::types::{ChannelId, ConsensusConfiguration, MessagesConfiguration, RewardConfiguration, TradePair};
 
 pub mod crypto {
     use super::KEY_TYPE;
@@ -93,6 +93,12 @@ pub mod pallet {
     pub type Divergency<T> = StorageValue<_, u32>;
 
     #[pallet::storage]
+    pub type RewardPolicyId<T> = StorageValue<_, ChannelId>;
+
+    #[pallet::storage]
+    pub type RewardAssetName<T> = StorageValue<_, BoundedVec<u8, ConstU32<64>>>;
+
+    #[pallet::storage]
     pub type TradePairs<T> = StorageValue<_, BoundedVec<TradePair, ConstU32<64>>>;
 
     #[pallet::storage]
@@ -140,6 +146,8 @@ pub mod pallet {
         pub divergency: u32,
         pub trade_pairs: BoundedVec<TradePair, ConstU32<64>>,
         pub channels_to_trade_pairs: MessagesConfiguration,
+        pub reward_policy_id: Option<ChannelId>,
+        pub reward_asset_name: Option<BoundedVec<u8, ConstU32<64>>>,
         // Ties `T` to `GenesisConfig` because is needed for `impl<T: Config> BuildGenesisConfig ...`
         pub _marker: PhantomData<T>,
     }
@@ -154,6 +162,8 @@ pub mod pallet {
                 divergency: Default::default(),
                 trade_pairs: BoundedVec::truncate_from(vec![TradePair::from_ticker("ADA-USD")]),
                 channels_to_trade_pairs: BoundedVec::new(),
+                reward_policy_id: None,
+                reward_asset_name: None,
                 _marker: Default::default(),
             }
         }
@@ -168,6 +178,12 @@ pub mod pallet {
             <Divergency<T>>::put(&self.divergency);
             <TradePairs<T>>::put(&self.trade_pairs);
             <ChannelsToTradePairs<T>>::put(&self.channels_to_trade_pairs);
+            if let Some(reward_policy_id) = &self.reward_policy_id {
+                <RewardPolicyId<T>>::put(reward_policy_id);
+            }
+            if let Some(reward_asset_name) = &self.reward_asset_name {
+                <RewardAssetName<T>>::put(reward_asset_name);
+            }
             for oracle_account in &self.authorized_nodes {
                 AuthorizedOracleNodes::<T>::insert(oracle_account, ());
             }
@@ -195,6 +211,7 @@ pub mod pallet {
         UpdatedConfig {
             consensus_config: ConsensusConfiguration,
             channels_to_trade_pairs: MessagesConfiguration,
+            reward_config: Option<RewardConfiguration>,
             block: BlockNumberFor<T>,
         },
         AddedOracleNode {
@@ -381,6 +398,7 @@ pub mod pallet {
             origin: OriginFor<T>,
             consensus_config: ConsensusConfiguration,
             channels_to_trade_pairs: MessagesConfiguration,
+            reward_config: Option<RewardConfiguration>,
         ) -> DispatchResult {
             ensure_root(origin)?;
             let when = <frame_system::Pallet<T>>::block_number();
@@ -394,9 +412,15 @@ pub mod pallet {
             <TradePairs<T>>::put(&consensus_config.trade_pairs);
             <ChannelsToTradePairs<T>>::put(&channels_to_trade_pairs);
 
+            if let Some(reward) = &reward_config {
+                <RewardPolicyId<T>>::put(&reward.reward_policy_id);
+                <RewardAssetName<T>>::put(&reward.reward_asset_name);
+            }
+
             Self::deposit_event(Event::UpdatedConfig {
                 consensus_config,
                 channels_to_trade_pairs,
+                reward_config,
                 block: when,
             });
 
@@ -693,6 +717,22 @@ impl<T: Config> Pallet<T> {
             outliers_range,
             divergency,
             trade_pairs,
+        })
+    }
+
+    pub fn get_reward_config() -> Option<RewardConfiguration> {
+        let reward_policy_id = RewardPolicyId::<T>::get().or_else(|| {
+            log::error!("Error fetching RewardPolicyId");
+            None
+        })?;
+        let reward_asset_name = RewardAssetName::<T>::get().or_else(|| {
+            log::error!("Error fetching RewardAssetName");
+            None
+        })?;
+
+        Some(RewardConfiguration {
+            reward_policy_id,
+            reward_asset_name,
         })
     }
 
