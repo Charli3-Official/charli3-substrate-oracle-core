@@ -257,6 +257,8 @@ pub mod pallet {
         pub timestamp: u64,
         /// Vec of byte arrays for ed25519 public keys with reward multiplier.
         pub rewards: BoundedVec<([u8; 32], u16), ConstU32<64>>,
+        /// Optional reward asset: (policy_id, asset_name).
+        pub reward_asset: Option<(ChannelId, BoundedVec<u8, ConstU32<64>>)>,
     }
 
     impl OracleMessage {
@@ -313,6 +315,25 @@ pub mod pallet {
                 encoder.end().unwrap(); // end [pubkey, multiplier]
             }
             encoder.end().unwrap(); // end rewards array
+
+            // --- reward_asset: Option<Asset> ---
+            match &self.reward_asset {
+                Some((policy_id, asset_name)) => {
+                    encoder.tag(minicbor::data::Tag::new(121)).unwrap(); // Some
+                    encoder.begin_array().unwrap();
+                    encoder.tag(minicbor::data::Tag::new(121)).unwrap(); // Asset constr(0)
+                    encoder.begin_array().unwrap();
+                    encoder.bytes(policy_id).unwrap();
+                    encoder.bytes(asset_name).unwrap();
+                    encoder.end().unwrap(); // end Asset array
+                    encoder.end().unwrap(); // end Some array
+                }
+                None => {
+                    encoder.tag(minicbor::data::Tag::new(122)).unwrap(); // None
+                    encoder.begin_array().unwrap();
+                    encoder.end().unwrap();
+                }
+            }
 
             // End main array
             encoder.end().unwrap();
@@ -766,6 +787,11 @@ impl<T: Config> Pallet<T> {
         })?;
         log::debug!("Current state: {:?}", &current_state);
 
+        let reward_asset = match (RewardPolicyId::<T>::get(), RewardAssetName::<T>::get()) {
+            (Some(policy_id), Some(asset_name)) => Some((policy_id, asset_name)),
+            _ => None,
+        };
+
         Some(
             channels_to_trade_pairs
                 .into_iter()
@@ -776,6 +802,7 @@ impl<T: Config> Pallet<T> {
                         &all_trade_pairs,
                         chan,
                         chan_trade_pairs,
+                        reward_asset.clone(),
                     );
 
                     log::debug!("Prepared Message: {:?}", message);
@@ -809,6 +836,7 @@ impl<T: Config> Pallet<T> {
         all_trade_pairs: &Vec<TradePair>,
         channel_id: ChannelId,
         this_trade_pairs: Vec<TradePair>,
+        reward_asset: Option<(ChannelId, BoundedVec<u8, ConstU32<64>>)>,
     ) -> OracleMessage {
         let state_mapping: BTreeMap<
             &TradePair,
@@ -840,6 +868,7 @@ impl<T: Config> Pallet<T> {
             prices_and_age: BoundedVec::truncate_from(prices_and_age),
             timestamp: aggregation_state.timestamp,
             rewards: BoundedVec::truncate_from(this_rewards.into_iter().collect()),
+            reward_asset,
         }
     }
 }
