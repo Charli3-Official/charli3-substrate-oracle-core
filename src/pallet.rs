@@ -292,8 +292,7 @@ pub mod pallet {
                     }
                     _none => {
                         encoder.tag(minicbor::data::Tag::new(122)).unwrap(); // None
-                        encoder.begin_array().unwrap();
-                        encoder.end().unwrap(); // empty array
+                        encoder.array(0).unwrap(); // definite empty array (0x80), matches Lucid encoding
                     }
                 }
             }
@@ -330,8 +329,7 @@ pub mod pallet {
                 }
                 None => {
                     encoder.tag(minicbor::data::Tag::new(122)).unwrap(); // None
-                    encoder.begin_array().unwrap();
-                    encoder.end().unwrap();
+                    encoder.array(0).unwrap(); // definite empty array (0x80), matches Lucid encoding
                 }
             }
 
