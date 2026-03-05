@@ -433,9 +433,15 @@ pub mod pallet {
             <TradePairs<T>>::put(&consensus_config.trade_pairs);
             <ChannelsToTradePairs<T>>::put(&channels_to_trade_pairs);
 
-            if let Some(reward) = &reward_config {
-                <RewardPolicyId<T>>::put(&reward.reward_policy_id);
-                <RewardAssetName<T>>::put(&reward.reward_asset_name);
+            match &reward_config {
+                Some(reward) => {
+                    <RewardPolicyId<T>>::put(&reward.reward_policy_id);
+                    <RewardAssetName<T>>::put(&reward.reward_asset_name);
+                }
+                None => {
+                    <RewardPolicyId<T>>::kill();
+                    <RewardAssetName<T>>::kill();
+                }
             }
 
             Self::deposit_event(Event::UpdatedConfig {
