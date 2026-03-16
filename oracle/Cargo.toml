@@ -1,0 +1,87 @@
+[package]
+name = "charli3-oracle-core"
+version = "0.1.0-alpha.3"
+edition = "2024"
+license = "BUSL-1.1"
+authors = ["Charli3 Team <info@charli3.io>"]
+description = "Core oracle types, aggregation algorithms, and price providers for Charli3"
+repository = "https://github.com/Charli3-Official/charli3-substrate-oracle-core"
+keywords = ["oracle", "substrate", "cardano", "defi"]
+categories = ["finance", "cryptography::cryptocurrencies"]
+documentation = "https://docs.rs/charli3-oracle-core"
+homepage = "https://charli3.io"
+readme = "README.md"
+exclude = [
+    ".github/",
+    "tests/",
+    "benches/",
+]
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[dependencies]
+# Encoding
+parity-scale-codec = { version = "3.7.4", default-features = false, features = ["derive"] }
+scale-info = { version = "2.11.6", default-features = false, features = ["derive"] }
+minicbor = { version = "0.26.5", default-features = false, features = ["alloc"] }
+
+# Serialization
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0.132", default-features = false, features = ["alloc"] }
+
+# Substrate primitives (for hashing, offchain, etc.)
+sp-core = { default-features = false, git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2509" }
+sp-io = { default-features = false, git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2509" }
+sp-runtime = { default-features = false, git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2509" }
+sp-std = { default-features = false, git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2509" }
+
+# Math
+num-rational = { version = "0.4.2", default-features = false }
+num-traits = { version = "0.2.19", default-features = false }
+
+# Hex
+hex = { version = "0.4", default-features = false, features = ["alloc"] }
+
+# Logging
+log = { version = "0.4.22", default-features = false }
+
+frame-support = { default-features = false, git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2509" }
+frame-system = { default-features = false, git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2509", optional = true }
+pallet-timestamp = { default-features = false, git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2509", optional = true }
+
+[features]
+default = ["std"]
+std = [
+    "parity-scale-codec/std",
+    "scale-info/std",
+    "minicbor/std",
+    "serde/std",
+    "serde_json/std",
+    "sp-core/std",
+    "sp-io/std",
+    "sp-runtime/std",
+    "sp-std/std",
+    "num-rational/std",
+    "num-traits/std",
+    "hex/std",
+    "log/std",
+    "frame-support/std",
+    "frame-system?/std",
+    "pallet-timestamp?/std",
+]
+
+# Enable full pallet functionality (storage, extrinsics, etc.)
+pallet = [
+    "frame-system",
+    "pallet-timestamp",
+]
+
+try-runtime = [
+    "frame-support/try-runtime",
+    "frame-system?/try-runtime",
+    "pallet-timestamp?/try-runtime",
+]
