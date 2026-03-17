@@ -137,6 +137,22 @@ pub mod pallet {
     pub type AuthorizedOracleNodes<T: Config> =
         StorageMap<_, Identity, T::AccountId, NodeStakingInfo<BlockNumberFor<T>>>;
 
+    /// Staking certificate signatures.
+    /// Key1: (node_account, certificate_block) — identifies the certificate.
+    /// Key2: signing node account.
+    /// Value: ed25519 signature bytes (64 bytes).
+    /// Bridge-offchain reads these to package into the Cardano tx redeemer.
+    #[pallet::storage]
+    pub type StakingSignatureStorage<T: Config> = StorageDoubleMap<
+        _,
+        Twox64Concat,
+        (T::AccountId, BlockNumberFor<T>),
+        Identity,
+        T::AccountId,
+        [u8; 64],
+        OptionQuery,
+    >;
+
     /// Slash votes: (target_node, voting_node) → SlashVote
     #[pallet::storage]
     pub type SlashVotes<T: Config> = StorageDoubleMap<
@@ -344,6 +360,13 @@ pub mod pallet {
             approved_amount: u64,
             when: BlockNumberFor<T>,
         },
+        /// A node stored their signature for a staking certificate.
+        /// Bridge-offchain collects these to build the Cardano tx redeemer.
+        StakingSignatureStored {
+            node: T::AccountId,
+            signer: T::AccountId,
+            when: BlockNumberFor<T>,
+        },
         /// Withdrawal confirmed on Cardano
         WithdrawalConfirmed {
             node: T::AccountId,
@@ -486,6 +509,46 @@ pub mod pallet {
         pub fn cardano_cbor_hash(&self) -> [u8; 32] {
             let cbor_data = self.to_cardano_cbor();
             blake2_256(&cbor_data)
+        }
+    }
+
+    #[derive(
+        Clone, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo,
+    )]
+    /// Staking certificate message — CBOR-encoded and signed by oracle nodes.
+    /// Bridge-offchain reads this + StakingSignatureStorage to build Cardano tx redeemer.
+    pub struct StakingMessage {
+        /// Cardano PKH of the node being staked (28-32 bytes).
+        pub cardano_pkh: BoundedVec<u8, ConstU32<32>>,
+        /// Stake amount in lovelace.
+        pub stake_amount: u64,
+        /// Partnerchain block until which stake is locked.
+        pub lock_until: u32,
+        /// Block at which certificate was issued (prevents replay).
+        pub issued_at: u32,
+    }
+
+    impl StakingMessage {
+        /// Encode to Cardano-compatible CBOR (same pattern as OracleMessage).
+        /// Bridge-offchain deserializes this to build the Cardano redeemer.
+        pub fn to_cardano_cbor(&self) -> AllocVec<u8> {
+            let mut buf = AllocVec::new();
+            let mut encoder = Encoder::new(&mut buf);
+
+            encoder.tag(minicbor::data::Tag::new(121)).unwrap();
+            encoder.begin_array().unwrap();
+            encoder.bytes(&self.cardano_pkh).unwrap();
+            encoder.u64(self.stake_amount).unwrap();
+            encoder.u32(self.lock_until).unwrap();
+            encoder.u32(self.issued_at).unwrap();
+            encoder.end().unwrap();
+
+            buf
+        }
+
+        /// Blake2b-256 hash of the CBOR — this is what each node signs with ed25519.
+        pub fn cardano_cbor_hash(&self) -> [u8; 32] {
+            blake2_256(&self.to_cardano_cbor())
         }
     }
 
@@ -906,6 +969,45 @@ pub mod pallet {
                 tx_hash,
                 released_amount,
                 penalty_amount,
+                when,
+            });
+
+            Ok(())
+        }
+
+        /// Store an ed25519 signature for a staking certificate.
+        /// Called by each oracle node after `StakingCertificateIssued` is emitted.
+        /// Bridge-offchain collects all signatures from storage to build the Cardano redeemer.
+        #[pallet::call_index(14)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn store_staking_signature(
+            origin: OriginFor<T>,
+            node_account: T::AccountId,
+            certificate_block: BlockNumberFor<T>,
+            signature: [u8; 64],
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            let when = <frame_system::Pallet<T>>::block_number();
+
+            // Only authorized nodes can sign
+            ensure!(
+                AuthorizedOracleNodes::<T>::contains_key(&who),
+                Error::<T>::UnauthorizedNode
+            );
+
+            // Node being staked must exist and be in StakingApproved state
+            let _info = AuthorizedOracleNodes::<T>::get(&node_account)
+                .ok_or(Error::<T>::UnauthorizedNode)?;
+
+            StakingSignatureStorage::<T>::insert(
+                (node_account.clone(), certificate_block),
+                &who,
+                signature,
+            );
+
+            Self::deposit_event(Event::StakingSignatureStored {
+                node: node_account,
+                signer: who,
                 when,
             });
 
