@@ -1544,9 +1544,10 @@ impl<T: Config> Pallet<T> {
         let mut info = AuthorizedOracleNodes::<T>::get(node_account)
             .ok_or(Error::<T>::UnauthorizedNode)?;
 
-        // Restore state to ActiveStake if it was in SlashVoting
+        // Restore state to RetireStake — slash only happens after request-retire,
+        // so the node was in RetireStake before SlashVoting.
         if info.state == OracleNodeStakingState::SlashVoting {
-            info.state = OracleNodeStakingState::ActiveStake;
+            info.state = OracleNodeStakingState::RetireStake;
         }
         AuthorizedOracleNodes::<T>::insert(node_account, info);
 
