@@ -68,7 +68,6 @@ pub mod pallet {
     #[derive(Clone, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo)]
     pub enum OracleNodeStakingState {
         Inactive,
-        PendingStake,
         StakingApproved,
         ActiveStake,
         RetireStake,
@@ -88,6 +87,8 @@ pub mod pallet {
         pub stake_amount: u64,
         pub state: OracleNodeStakingState,
         pub stake_activated_at: BlockNumber,
+        /// Cardano public key hash — used by bridge-offchain to create Stake UTxO
+        pub cardano_pkh: BoundedVec<u8, ConstU32<32>>,
     }
 
     #[pallet::pallet]
@@ -236,10 +237,14 @@ pub mod pallet {
                 <RewardAssetName<T>>::put(reward_asset_name);
             }
             for oracle_account in &self.authorized_nodes {
+                // Genesis nodes are pre-authorized and start as ActiveStake.
+                // They are the founding/trusted nodes that do not need to go
+                // through the staking flow. New nodes joining later must stake.
                 AuthorizedOracleNodes::<T>::insert(oracle_account, NodeStakingInfo {
                     stake_amount: 0u64,
-                    state: OracleNodeStakingState::Inactive,
+                    state: OracleNodeStakingState::ActiveStake,
                     stake_activated_at: BlockNumberFor::<T>::from(0u32),
+                    cardano_pkh: BoundedVec::new(),
                 });
             }
         }
@@ -277,24 +282,19 @@ pub mod pallet {
             which: T::AccountId,
             block: BlockNumberFor<T>,
         },
-        /// Node requested staking
-        StakeRequested {
-            node: T::AccountId,
-            amount: u64,
-            when: BlockNumberFor<T>,
-        },
         /// Staking certificate was issued and approved
         StakingCertificateIssued {
             node: T::AccountId,
             amount: u64,
-            expires_at: BlockNumberFor<T>,
             lock_until: BlockNumberFor<T>,
+            /// Cardano PKH — bridge-offchain reads this to create Stake UTxO
+            cardano_pkh: BoundedVec<u8, ConstU32<32>>,
             when: BlockNumberFor<T>,
         },
         /// Staking confirmed on Cardano
         StakingConfirmed {
             node: T::AccountId,
-            tx_hash: [u8; 64],
+            tx_hash: [u8; 32],
             stake_amount: u64,
             when: BlockNumberFor<T>,
         },
@@ -347,7 +347,7 @@ pub mod pallet {
         /// Withdrawal confirmed on Cardano
         WithdrawalConfirmed {
             node: T::AccountId,
-            tx_hash: [u8; 64],
+            tx_hash: [u8; 32],
             released_amount: u64,
             penalty_amount: u64,
             when: BlockNumberFor<T>,
@@ -358,8 +358,6 @@ pub mod pallet {
     pub enum Error<T> {
         /// Oracle node is not authorized to submit data
         UnauthorizedNode,
-        /// Node is already staking or in wrong state
-        NodeAlreadyStaking,
         /// Invalid state for operation
         InvalidNodeState,
         /// Stake amount mismatch
@@ -610,11 +608,15 @@ pub mod pallet {
             // Create the account in storage with zero balance
             frame_system::Pallet::<T>::inc_providers(&oracle_account);
 
-            // Authorize it as an oracle node
+            // Sudo-registered nodes start as Inactive.
+            // They must go through the staking flow (request_stake →
+            // generate_staking_certificate → confirm_cardano_stake)
+            // before becoming ActiveStake.
             AuthorizedOracleNodes::<T>::insert(&oracle_account, NodeStakingInfo {
                 stake_amount: 0u64,
                 state: OracleNodeStakingState::Inactive,
                 stake_activated_at: when,
+                cardano_pkh: BoundedVec::new(),
             });
 
             Self::deposit_event(Event::AddedOracleNode {
@@ -658,47 +660,6 @@ pub mod pallet {
 
         // ==================== STAKING EXTRINSICS ====================
 
-        #[pallet::call_index(5)]
-        #[pallet::weight((0, Pays::No))]
-        pub fn request_stake(
-            origin: OriginFor<T>,
-            stake_amount: u64,
-        ) -> DispatchResult {
-            let who = ensure_signed(origin)?;
-            let when = <frame_system::Pallet<T>>::block_number();
-
-            // Node must be authorized
-            let node_info = AuthorizedOracleNodes::<T>::get(&who);
-            ensure!(
-                node_info.is_some(),
-                Error::<T>::UnauthorizedNode
-            );
-
-            // Check node is not already staking
-            if let Some(info) = &node_info {
-                ensure!(
-                    matches!(info.state, OracleNodeStakingState::Inactive),
-                    Error::<T>::NodeAlreadyStaking
-                );
-            }
-
-            // Create/update node info
-            let info = NodeStakingInfo {
-                stake_amount,
-                state: OracleNodeStakingState::PendingStake,
-                stake_activated_at: when,
-            };
-            AuthorizedOracleNodes::<T>::insert(&who, info);
-
-            Self::deposit_event(Event::StakeRequested {
-                node: who,
-                amount: stake_amount,
-                when,
-            });
-
-            Ok(())
-        }
-
         #[pallet::call_index(6)]
         #[pallet::weight((0, Pays::No))]
         pub fn generate_staking_certificate(
@@ -706,30 +667,29 @@ pub mod pallet {
             node_account: T::AccountId,
             stake_amount: u64,
             lock_until_block: BlockNumberFor<T>,
-            expires_at_block: BlockNumberFor<T>,
+            cardano_pkh: BoundedVec<u8, ConstU32<32>>,
         ) -> DispatchResult {
             ensure_root(origin)?;
             let when = <frame_system::Pallet<T>>::block_number();
 
             let mut info = AuthorizedOracleNodes::<T>::get(&node_account)
                 .ok_or(Error::<T>::UnauthorizedNode)?;
+            // Admin approves directly from Inactive — no request_stake step needed.
             ensure!(
-                info.state == OracleNodeStakingState::PendingStake,
+                info.state == OracleNodeStakingState::Inactive,
                 Error::<T>::InvalidNodeState
             );
-            ensure!(
-                info.stake_amount == stake_amount,
-                Error::<T>::StakeMismatch
-            );
 
+            info.stake_amount = stake_amount;
             info.state = OracleNodeStakingState::StakingApproved;
+            info.cardano_pkh = cardano_pkh.clone();
             AuthorizedOracleNodes::<T>::insert(&node_account, info);
 
             Self::deposit_event(Event::StakingCertificateIssued {
                 node: node_account,
                 amount: stake_amount,
-                expires_at: expires_at_block,
                 lock_until: lock_until_block,
+                cardano_pkh,
                 when,
             });
 
@@ -740,7 +700,7 @@ pub mod pallet {
         #[pallet::weight((0, Pays::No))]
         pub fn confirm_cardano_stake(
             origin: OriginFor<T>,
-            tx_hash: [u8; 64],
+            tx_hash: [u8; 32],
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
             let when = <frame_system::Pallet<T>>::block_number();
@@ -795,7 +755,7 @@ pub mod pallet {
             origin: OriginFor<T>,
             node_account: T::AccountId,
             lock_until_block: BlockNumberFor<T>,
-            expires_at_block: BlockNumberFor<T>,
+            _expires_at_block: BlockNumberFor<T>,
         ) -> DispatchResult {
             ensure_root(origin)?;
             let when = <frame_system::Pallet<T>>::block_number();
@@ -897,7 +857,7 @@ pub mod pallet {
             origin: OriginFor<T>,
             node_account: T::AccountId,
             approved_amount: u64,
-            expires_at_block: BlockNumberFor<T>,
+            _expires_at_block: BlockNumberFor<T>,
         ) -> DispatchResult {
             ensure_root(origin)?;
             let when = <frame_system::Pallet<T>>::block_number();
@@ -923,7 +883,7 @@ pub mod pallet {
         #[pallet::weight((0, Pays::No))]
         pub fn confirm_cardano_withdrawal(
             origin: OriginFor<T>,
-            tx_hash: [u8; 64],
+            tx_hash: [u8; 32],
             released_amount: u64,
             penalty_amount: u64,
         ) -> DispatchResult {
