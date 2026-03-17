@@ -153,6 +153,23 @@ pub mod pallet {
         OptionQuery,
     >;
 
+    /// Withdrawal certificate signatures.
+    /// Key1: (node_account, certificate_block) — identifies the certificate.
+    /// Key2: signing node account.
+    /// Value: ed25519 signature bytes (64 bytes).
+    /// Bridge-offchain reads these alongside WithdrawalMessage to build the Cardano withdraw redeemer.
+    /// The approved_amount in WithdrawalMessage encodes the penalty: if < staked, Cardano enforces it.
+    #[pallet::storage]
+    pub type WithdrawalSignatureStorage<T: Config> = StorageDoubleMap<
+        _,
+        Twox64Concat,
+        (T::AccountId, BlockNumberFor<T>),
+        Identity,
+        T::AccountId,
+        [u8; 64],
+        OptionQuery,
+    >;
+
     /// Slash votes: (target_node, voting_node) → SlashVote
     #[pallet::storage]
     pub type SlashVotes<T: Config> = StorageDoubleMap<
@@ -361,8 +378,16 @@ pub mod pallet {
             when: BlockNumberFor<T>,
         },
         /// A node stored their signature for a staking certificate.
-        /// Bridge-offchain collects these to build the Cardano tx redeemer.
+        /// Bridge-offchain collects these to build the Cardano place-staking redeemer.
         StakingSignatureStored {
+            node: T::AccountId,
+            signer: T::AccountId,
+            when: BlockNumberFor<T>,
+        },
+        /// A node stored their signature for a withdrawal certificate.
+        /// Bridge-offchain collects these to build the Cardano withdraw redeemer.
+        /// approved_amount < staked triggers penalty enforcement on Cardano.
+        WithdrawalSignatureStored {
             node: T::AccountId,
             signer: T::AccountId,
             when: BlockNumberFor<T>,
@@ -547,6 +572,43 @@ pub mod pallet {
         }
 
         /// Blake2b-256 hash of the CBOR — this is what each node signs with ed25519.
+        pub fn cardano_cbor_hash(&self) -> [u8; 32] {
+            blake2_256(&self.to_cardano_cbor())
+        }
+    }
+
+    #[derive(
+        Clone, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo,
+    )]
+    /// Withdrawal certificate message — CBOR-encoded and signed by oracle nodes.
+    /// The approved_amount encodes the penalty: if approved_amount < staked_amount,
+    /// Cardano enforces that the difference goes to penalty_addr.
+    /// Bridge-offchain reads this + WithdrawalSignatureStorage to build the Cardano withdraw redeemer.
+    pub struct WithdrawalMessage {
+        /// Cardano PKH of the node withdrawing.
+        pub cardano_pkh: BoundedVec<u8, ConstU32<32>>,
+        /// Approved withdrawal amount in lovelace.
+        /// If less than staked, Cardano requires penalty output to penalty_addr.
+        pub approved_amount: u64,
+        /// Block at which certificate was issued (prevents replay).
+        pub issued_at: u32,
+    }
+
+    impl WithdrawalMessage {
+        pub fn to_cardano_cbor(&self) -> AllocVec<u8> {
+            let mut buf = AllocVec::new();
+            let mut encoder = Encoder::new(&mut buf);
+
+            encoder.tag(minicbor::data::Tag::new(121)).unwrap();
+            encoder.begin_array().unwrap();
+            encoder.bytes(&self.cardano_pkh).unwrap();
+            encoder.u64(self.approved_amount).unwrap();
+            encoder.u32(self.issued_at).unwrap();
+            encoder.end().unwrap();
+
+            buf
+        }
+
         pub fn cardano_cbor_hash(&self) -> [u8; 32] {
             blake2_256(&self.to_cardano_cbor())
         }
@@ -1006,6 +1068,43 @@ pub mod pallet {
             );
 
             Self::deposit_event(Event::StakingSignatureStored {
+                node: node_account,
+                signer: who,
+                when,
+            });
+
+            Ok(())
+        }
+
+        /// Store an ed25519 signature for a withdrawal certificate.
+        /// Called by each oracle node after `WithdrawalCertificateIssued` is emitted.
+        /// Bridge-offchain collects all signatures to build the Cardano withdraw redeemer.
+        #[pallet::call_index(15)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn store_withdrawal_signature(
+            origin: OriginFor<T>,
+            node_account: T::AccountId,
+            certificate_block: BlockNumberFor<T>,
+            signature: [u8; 64],
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            let when = <frame_system::Pallet<T>>::block_number();
+
+            ensure!(
+                AuthorizedOracleNodes::<T>::contains_key(&who),
+                Error::<T>::UnauthorizedNode
+            );
+
+            let _info = AuthorizedOracleNodes::<T>::get(&node_account)
+                .ok_or(Error::<T>::UnauthorizedNode)?;
+
+            WithdrawalSignatureStorage::<T>::insert(
+                (node_account.clone(), certificate_block),
+                &who,
+                signature,
+            );
+
+            Self::deposit_event(Event::WithdrawalSignatureStored {
                 node: node_account,
                 signer: who,
                 when,
