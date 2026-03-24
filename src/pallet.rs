@@ -19,6 +19,7 @@ pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"orac");
 use crate::aggregation::{calculate_median, filter_outliers};
 use crate::price_providers::{GenericApiProvider, PriceProvider};
 use crate::types::{ChannelId, ConsensusConfiguration, MessagesConfiguration, RewardConfiguration, TradePair};
+use frame_support::pallet_prelude::DispatchResult;
 
 pub mod crypto {
     use super::KEY_TYPE;
@@ -61,6 +62,37 @@ pub mod pallet {
     use scale_info::{TypeInfo, prelude::fmt};
     use sp_core::hashing::blake2_256;
     use sp_runtime::sp_std::str;
+
+    // ==================== STAKING TYPES ====================
+
+    #[derive(Clone, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo)]
+    pub enum OracleNodeStakingState {
+        Inactive,
+        StakingApproved,
+        ActiveStake,
+        RetireStake,
+        SlashVoting,
+        SlashApproved,
+        WithdrawApproved,
+    }
+
+    #[derive(Clone, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo)]
+    pub enum SlashVote {
+        Approve,
+        Deny,
+    }
+
+    #[derive(Clone, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo)]
+    pub struct NodeStakingInfo<BlockNumber: MaxEncodedLen + TypeInfo + Encode + Decode + DecodeWithMemTracking + Clone + Eq + PartialEq + core::fmt::Debug> {
+        pub stake_amount: u64,
+        pub state: OracleNodeStakingState,
+        pub stake_activated_at: BlockNumber,
+        /// Cardano PKH for admin key — added to OracleSettings.nodes_admin on Cardano.
+        /// Identifies the Stake UTxO on Cardano.
+        pub cardano_pkh_admin: BoundedVec<u8, ConstU32<32>>,
+        /// Cardano PKH for oracle/aggregation key — added to OracleSettings.nodes_aggregation on Cardano.
+        pub cardano_pkh_aggregation: BoundedVec<u8, ConstU32<32>>,
+    }
 
     #[pallet::pallet]
     pub struct Pallet<T>(_);
@@ -105,7 +137,104 @@ pub mod pallet {
     pub type ChannelsToTradePairs<T> = StorageValue<_, MessagesConfiguration>;
 
     #[pallet::storage]
-    pub type AuthorizedOracleNodes<T: Config> = StorageMap<_, Identity, T::AccountId, ()>;
+    pub type AuthorizedOracleNodes<T: Config> =
+        StorageMap<_, Identity, T::AccountId, NodeStakingInfo<BlockNumberFor<T>>>;
+
+    /// Pending staking approval: node → (stake_amount, lock_until, cardano_pkh_admin, cardano_pkh_aggregation).
+    /// Created by first admin signer, cleared when threshold is met.
+    #[pallet::storage]
+    pub type StakingApprovalInfo<T: Config> = StorageMap<
+        _,
+        Identity,
+        T::AccountId,
+        (u64, BlockNumberFor<T>, BoundedVec<u8, ConstU32<32>>, BoundedVec<u8, ConstU32<32>>),
+        OptionQuery,
+    >;
+
+    /// Staking approval signatures: (node, signer) → (admin_ed25519_pubkey, admin_sig).
+    /// Admins sign StakingMessage CBOR hash with their admin ed25519 key.
+    /// Cleared when threshold is met and certificate is emitted.
+    #[pallet::storage]
+    pub type StakingApprovalSigs<T: Config> = StorageDoubleMap<
+        _,
+        Identity,
+        T::AccountId,
+        Identity,
+        T::AccountId,
+        ([u8; 32], [u8; 64]),
+        OptionQuery,
+    >;
+
+    /// Pending withdrawal approval: node → approved_amount.
+    #[pallet::storage]
+    pub type WithdrawalApprovalInfo<T: Config> = StorageMap<
+        _,
+        Identity,
+        T::AccountId,
+        u64,
+        OptionQuery,
+    >;
+
+    /// Withdrawal approval signatures: (node, signer) → (admin_ed25519_pubkey, admin_sig).
+    /// Admins sign WithdrawalMessage CBOR hash with their admin ed25519 key.
+    #[pallet::storage]
+    pub type WithdrawalApprovalSigs<T: Config> = StorageDoubleMap<
+        _,
+        Identity,
+        T::AccountId,
+        Identity,
+        T::AccountId,
+        ([u8; 32], [u8; 64]),
+        OptionQuery,
+    >;
+
+    /// Issued staking certificate — written when threshold is met, queryable by bridge-offchain.
+    /// node → (stake_amount, lock_until, cardano_pkh_admin, cardano_pkh_aggregation, admin_sigs)
+    /// Bridge-offchain uses cardano_pkh_admin + cardano_pkh_aggregation to update OracleSettings.
+    /// Analogous to SignatureStorage for oracle messages.
+    /// Cleared when node calls confirm_cardano_stake.
+    #[pallet::storage]
+    pub type IssuedStakingCerts<T: Config> = StorageMap<
+        _,
+        Identity,
+        T::AccountId,
+        (u64, BlockNumberFor<T>, BoundedVec<u8, ConstU32<32>>, BoundedVec<u8, ConstU32<32>>, BoundedVec<([u8; 32], [u8; 64]), ConstU32<32>>),
+        OptionQuery,
+    >;
+
+    /// Issued withdrawal certificate — written when threshold is met, queryable by bridge-offchain.
+    /// node → (approved_amount, admin_sigs)
+    /// Cleared when node calls confirm_cardano_withdrawal.
+    #[pallet::storage]
+    pub type IssuedWithdrawalCerts<T: Config> = StorageMap<
+        _,
+        Identity,
+        T::AccountId,
+        (u64, BoundedVec<([u8; 32], [u8; 64]), ConstU32<32>>),
+        OptionQuery,
+    >;
+
+    /// Slash votes: (target_node, voting_node) → SlashVote
+    #[pallet::storage]
+    pub type SlashVotes<T: Config> = StorageDoubleMap<
+        _,
+        Identity,
+        T::AccountId,  // node being slashed
+        Identity,
+        T::AccountId,  // node voting
+        SlashVote,
+        OptionQuery,
+    >;
+
+    /// Slash proposals: node_account → (slash_amount, initiated_by, block_number)
+    #[pallet::storage]
+    pub type SlashProposals<T: Config> = StorageMap<
+        _,
+        Identity,
+        T::AccountId,
+        (u64, T::AccountId, BlockNumberFor<T>),
+        OptionQuery,
+    >;
 
     /// NodesPrices store latest price for each node indexed by trade pair prefix
     /// about hashers https://docs.substrate.io/build/runtime-storage/#common-substrate-hashers
@@ -185,7 +314,16 @@ pub mod pallet {
                 <RewardAssetName<T>>::put(reward_asset_name);
             }
             for oracle_account in &self.authorized_nodes {
-                AuthorizedOracleNodes::<T>::insert(oracle_account, ());
+                // Genesis nodes are pre-authorized and start as ActiveStake.
+                // They are the founding/trusted nodes that do not need to go
+                // through the staking flow. New nodes joining later must stake.
+                AuthorizedOracleNodes::<T>::insert(oracle_account, NodeStakingInfo {
+                    stake_amount: 0u64,
+                    state: OracleNodeStakingState::ActiveStake,
+                    stake_activated_at: BlockNumberFor::<T>::from(0u32),
+                    cardano_pkh_admin: BoundedVec::new(),
+                    cardano_pkh_aggregation: BoundedVec::new(),
+                });
             }
         }
     }
@@ -222,12 +360,122 @@ pub mod pallet {
             which: T::AccountId,
             block: BlockNumberFor<T>,
         },
+        /// Staking certificate was issued and approved — carries threshold admin signatures inline.
+        /// Bridge-offchain reads this single event to build the Cardano place-staking redeemer.
+        StakingCertificateIssued {
+            node: T::AccountId,
+            amount: u64,
+            lock_until: BlockNumberFor<T>,
+            /// Admin key PKH — bridge-offchain adds to OracleSettings.nodes_admin
+            cardano_pkh_admin: BoundedVec<u8, ConstU32<32>>,
+            /// Aggregation key PKH — bridge-offchain adds to OracleSettings.nodes_aggregation
+            cardano_pkh_aggregation: BoundedVec<u8, ConstU32<32>>,
+            /// Admin ed25519 signatures: Vec<(pubkey_32, sig_64)>
+            sigs: BoundedVec<([u8; 32], [u8; 64]), ConstU32<32>>,
+            when: BlockNumberFor<T>,
+        },
+        /// Staking confirmed on Cardano
+        StakingConfirmed {
+            node: T::AccountId,
+            tx_hash: [u8; 32],
+            stake_amount: u64,
+            when: BlockNumberFor<T>,
+        },
+        /// Node requested retire
+        RetireRequested {
+            node: T::AccountId,
+            when: BlockNumberFor<T>,
+        },
+        /// Retire certificate issued
+        RetireCertificateIssued {
+            node: T::AccountId,
+            lock_until: BlockNumberFor<T>,
+            when: BlockNumberFor<T>,
+        },
+        /// Slash request initiated
+        SlashRequested {
+            node: T::AccountId,
+            slash_amount: u64,
+            initiated_by: T::AccountId,
+            when: BlockNumberFor<T>,
+        },
+        /// Slash vote cast
+        SlashVoteCast {
+            node: T::AccountId,
+            voter: T::AccountId,
+            vote: SlashVote,
+            when: BlockNumberFor<T>,
+        },
+        /// Slash approved by voting
+        SlashApproved {
+            node: T::AccountId,
+            slash_amount: u64,
+            approve_count: u32,
+            deny_count: u32,
+            when: BlockNumberFor<T>,
+        },
+        /// Slash rejected by voting
+        SlashRejected {
+            node: T::AccountId,
+            approve_count: u32,
+            deny_count: u32,
+            when: BlockNumberFor<T>,
+        },
+        /// Withdrawal certificate issued — carries threshold admin signatures inline.
+        /// Bridge-offchain reads this single event to build the Cardano withdraw redeemer.
+        WithdrawalCertificateIssued {
+            node: T::AccountId,
+            approved_amount: u64,
+            /// Admin ed25519 signatures: Vec<(pubkey_32, sig_64)>
+            sigs: BoundedVec<([u8; 32], [u8; 64]), ConstU32<32>>,
+            when: BlockNumberFor<T>,
+        },
+        /// An admin signed a staking approval — waiting for more signatures.
+        StakingApprovalSigned {
+            node: T::AccountId,
+            signer: T::AccountId,
+            when: BlockNumberFor<T>,
+        },
+        /// An admin signed a withdrawal approval — waiting for more signatures.
+        WithdrawalApprovalSigned {
+            node: T::AccountId,
+            signer: T::AccountId,
+            when: BlockNumberFor<T>,
+        },
+        /// Withdrawal confirmed on Cardano
+        WithdrawalConfirmed {
+            node: T::AccountId,
+            tx_hash: [u8; 32],
+            released_amount: u64,
+            penalty_amount: u64,
+            when: BlockNumberFor<T>,
+        },
     }
 
     #[pallet::error]
     pub enum Error<T> {
         /// Oracle node is not authorized to submit data
         UnauthorizedNode,
+        /// Invalid state for operation
+        InvalidNodeState,
+        /// Stake amount mismatch
+        StakeMismatch,
+        /// Slash amount invalid
+        SlashAmountInvalid,
+        /// Cannot vote for yourself
+        CannotVoteForSelf,
+        /// No active slash to vote on
+        NoActiveSlash,
+        /// Approved amount invalid
+        ApprovedAmountInvalid,
+        /// Amount mismatch on withdrawal
+        AmountMismatch,
+        /// Signing admin submitted different params than the existing proposal
+        ProposalMismatch,
+        /// This account has already signed this proposal
+        AlreadySigned,
+        /// Admin signature is invalid
+        InvalidAdminSignature,
     }
 
     #[derive(
@@ -342,6 +590,80 @@ pub mod pallet {
         pub fn cardano_cbor_hash(&self) -> [u8; 32] {
             let cbor_data = self.to_cardano_cbor();
             blake2_256(&cbor_data)
+        }
+    }
+
+    #[derive(
+        Clone, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo,
+    )]
+    /// Staking certificate message — CBOR-encoded and signed by admin nodes.
+    /// Bridge-offchain reads the StakingCertificateIssued event (which carries sigs inline).
+    /// Contains both Cardano PKHs so bridge-offchain can update OracleSettings.nodes_admin
+    /// and OracleSettings.nodes_aggregation when placing the stake.
+    pub struct StakingMessage {
+        /// Cardano PKH for admin key — added to OracleSettings.nodes_admin.
+        pub cardano_pkh_admin: BoundedVec<u8, ConstU32<32>>,
+        /// Cardano PKH for oracle/aggregation key — added to OracleSettings.nodes_aggregation.
+        pub cardano_pkh_aggregation: BoundedVec<u8, ConstU32<32>>,
+        /// Stake amount in lovelace.
+        pub stake_amount: u64,
+        /// Partnerchain block until which stake is locked.
+        pub lock_until: u32,
+    }
+
+    impl StakingMessage {
+        /// Encode to Cardano-compatible CBOR.
+        /// tag(121) + indefinite_array [ bytes(pkh_admin), bytes(pkh_aggregation), u64(stake_amount), u32(lock_until) ]
+        pub fn to_cardano_cbor(&self) -> AllocVec<u8> {
+            let mut buf = AllocVec::new();
+            let mut encoder = Encoder::new(&mut buf);
+            encoder.tag(minicbor::data::Tag::new(121)).unwrap();
+            encoder.begin_array().unwrap();
+            encoder.bytes(&self.cardano_pkh_admin).unwrap();
+            encoder.bytes(&self.cardano_pkh_aggregation).unwrap();
+            encoder.u64(self.stake_amount).unwrap();
+            encoder.u32(self.lock_until).unwrap();
+            encoder.end().unwrap();
+            buf
+        }
+
+        /// Blake2b-256 hash of the CBOR — this is what each admin signs with their ed25519 key.
+        pub fn cardano_cbor_hash(&self) -> [u8; 32] {
+            blake2_256(&self.to_cardano_cbor())
+        }
+    }
+
+    #[derive(
+        Clone, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, Debug, MaxEncodedLen, TypeInfo,
+    )]
+    /// Withdrawal certificate message — CBOR-encoded and signed by admin nodes.
+    /// The approved_amount encodes the penalty: if approved_amount < staked_amount,
+    /// Cardano enforces that the difference goes to penalty_addr.
+    /// Bridge-offchain reads the WithdrawalCertificateIssued event (which carries sigs inline).
+    pub struct WithdrawalMessage {
+        /// Cardano admin PKH of the node withdrawing — identifies the Stake UTxO on Cardano.
+        pub cardano_pkh_admin: BoundedVec<u8, ConstU32<32>>,
+        /// Approved withdrawal amount in lovelace.
+        /// If less than staked, Cardano requires penalty output to penalty_addr.
+        pub approved_amount: u64,
+    }
+
+    impl WithdrawalMessage {
+        /// Encode to Cardano-compatible CBOR.
+        /// tag(121) + indefinite_array [ bytes(cardano_pkh_admin), u64(approved_amount) ]
+        pub fn to_cardano_cbor(&self) -> AllocVec<u8> {
+            let mut buf = AllocVec::new();
+            let mut encoder = Encoder::new(&mut buf);
+            encoder.tag(minicbor::data::Tag::new(121)).unwrap();
+            encoder.begin_array().unwrap();
+            encoder.bytes(&self.cardano_pkh_admin).unwrap();
+            encoder.u64(self.approved_amount).unwrap();
+            encoder.end().unwrap();
+            buf
+        }
+
+        pub fn cardano_cbor_hash(&self) -> [u8; 32] {
+            blake2_256(&self.to_cardano_cbor())
         }
     }
 
@@ -464,8 +786,17 @@ pub mod pallet {
             // Create the account in storage with zero balance
             frame_system::Pallet::<T>::inc_providers(&oracle_account);
 
-            // Authorize it as an oracle node
-            AuthorizedOracleNodes::<T>::insert(&oracle_account, ());
+            // Sudo-registered nodes start as Inactive.
+            // They must go through the staking flow (request_stake →
+            // generate_staking_certificate → confirm_cardano_stake)
+            // before becoming ActiveStake.
+            AuthorizedOracleNodes::<T>::insert(&oracle_account, NodeStakingInfo {
+                stake_amount: 0u64,
+                state: OracleNodeStakingState::Inactive,
+                stake_activated_at: when,
+                cardano_pkh_admin: BoundedVec::new(),
+                cardano_pkh_aggregation: BoundedVec::new(),
+            });
 
             Self::deposit_event(Event::AddedOracleNode {
                 which: oracle_account,
@@ -505,6 +836,404 @@ pub mod pallet {
 
             Ok(())
         }
+
+        // ==================== STAKING EXTRINSICS ====================
+
+        #[pallet::call_index(6)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn generate_staking_certificate(
+            origin: OriginFor<T>,
+            node_account: T::AccountId,
+            stake_amount: u64,
+            lock_until_block: BlockNumberFor<T>,
+            cardano_pkh_admin: BoundedVec<u8, ConstU32<32>>,
+            cardano_pkh_aggregation: BoundedVec<u8, ConstU32<32>>,
+            admin_pubkey: [u8; 32],
+            admin_sig: [u8; 64],
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            let when = <frame_system::Pallet<T>>::block_number();
+
+            // Cannot approve your own staking
+            ensure!(who != node_account, Error::<T>::CannotVoteForSelf);
+
+            // Node must exist and be in Inactive state
+            let mut info = AuthorizedOracleNodes::<T>::get(&node_account)
+                .ok_or(Error::<T>::UnauthorizedNode)?;
+            ensure!(
+                info.state == OracleNodeStakingState::Inactive,
+                Error::<T>::InvalidNodeState
+            );
+
+            // If a proposal already exists, verify params match
+            if let Some((existing_amount, existing_lock, existing_pkh_admin, existing_pkh_agg)) =
+                StakingApprovalInfo::<T>::get(&node_account)
+            {
+                ensure!(
+                    existing_amount == stake_amount
+                        && existing_lock == lock_until_block
+                        && existing_pkh_admin == cardano_pkh_admin
+                        && existing_pkh_agg == cardano_pkh_aggregation,
+                    Error::<T>::ProposalMismatch
+                );
+            } else {
+                // First signer — create the proposal
+                StakingApprovalInfo::<T>::insert(
+                    &node_account,
+                    (stake_amount, lock_until_block, cardano_pkh_admin.clone(), cardano_pkh_aggregation.clone()),
+                );
+            }
+
+            // Ensure this admin hasn't already signed
+            ensure!(
+                !StakingApprovalSigs::<T>::contains_key(&node_account, &who),
+                Error::<T>::AlreadySigned
+            );
+
+            // Store this admin's signature
+            StakingApprovalSigs::<T>::insert(&node_account, &who, (admin_pubkey, admin_sig));
+
+            // Count collected signatures
+            let sig_count = StakingApprovalSigs::<T>::iter_prefix(&node_account).count() as u32;
+            let threshold = MinNodesForTrustedAggregation::<T>::get().unwrap_or(2);
+
+            if sig_count >= threshold {
+                // Collect all sigs into BoundedVec
+                let mut collected_sigs: BoundedVec<([u8; 32], [u8; 64]), ConstU32<32>> =
+                    BoundedVec::new();
+                for (_signer, sig_pair) in StakingApprovalSigs::<T>::iter_prefix(&node_account) {
+                    let _ = collected_sigs.try_push(sig_pair);
+                }
+
+                // Update node state
+                info.stake_amount = stake_amount;
+                info.state = OracleNodeStakingState::StakingApproved;
+                info.cardano_pkh_admin = cardano_pkh_admin.clone();
+                info.cardano_pkh_aggregation = cardano_pkh_aggregation.clone();
+                AuthorizedOracleNodes::<T>::insert(&node_account, info);
+
+                // Clean up approval storage
+                StakingApprovalInfo::<T>::remove(&node_account);
+                let _ = StakingApprovalSigs::<T>::clear_prefix(&node_account, u32::MAX, None);
+
+                // Persist issued certificate so bridge-offchain can query it
+                IssuedStakingCerts::<T>::insert(
+                    &node_account,
+                    (stake_amount, lock_until_block, cardano_pkh_admin.clone(), cardano_pkh_aggregation.clone(), collected_sigs.clone()),
+                );
+
+                Self::deposit_event(Event::StakingCertificateIssued {
+                    node: node_account,
+                    amount: stake_amount,
+                    lock_until: lock_until_block,
+                    cardano_pkh_admin,
+                    cardano_pkh_aggregation,
+                    sigs: collected_sigs,
+                    when,
+                });
+            } else {
+                Self::deposit_event(Event::StakingApprovalSigned {
+                    node: node_account,
+                    signer: who,
+                    when,
+                });
+            }
+
+            Ok(())
+        }
+
+        #[pallet::call_index(7)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn confirm_cardano_stake(
+            origin: OriginFor<T>,
+            tx_hash: [u8; 32],
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            let when = <frame_system::Pallet<T>>::block_number();
+
+            let mut info = AuthorizedOracleNodes::<T>::get(&who)
+                .ok_or(Error::<T>::UnauthorizedNode)?;
+            ensure!(
+                info.state == OracleNodeStakingState::StakingApproved,
+                Error::<T>::InvalidNodeState
+            );
+
+            info.state = OracleNodeStakingState::ActiveStake;
+            AuthorizedOracleNodes::<T>::insert(&who, info.clone());
+
+            // Certificate has been used — clear it from queryable storage
+            IssuedStakingCerts::<T>::remove(&who);
+
+            Self::deposit_event(Event::StakingConfirmed {
+                node: who,
+                tx_hash,
+                stake_amount: info.stake_amount,
+                when,
+            });
+
+            Ok(())
+        }
+
+        #[pallet::call_index(8)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn request_retire(origin: OriginFor<T>) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            let when = <frame_system::Pallet<T>>::block_number();
+
+            let mut info = AuthorizedOracleNodes::<T>::get(&who)
+                .ok_or(Error::<T>::UnauthorizedNode)?;
+            ensure!(
+                info.state == OracleNodeStakingState::ActiveStake,
+                Error::<T>::InvalidNodeState
+            );
+
+            info.state = OracleNodeStakingState::RetireStake;
+            AuthorizedOracleNodes::<T>::insert(&who, info);
+
+            Self::deposit_event(Event::RetireRequested {
+                node: who,
+                when,
+            });
+
+            Ok(())
+        }
+
+        #[pallet::call_index(9)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn generate_retire_certificate(
+            origin: OriginFor<T>,
+            node_account: T::AccountId,
+            lock_until_block: BlockNumberFor<T>,
+            _expires_at_block: BlockNumberFor<T>,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            let when = <frame_system::Pallet<T>>::block_number();
+
+            let _info = AuthorizedOracleNodes::<T>::get(&node_account)
+                .ok_or(Error::<T>::UnauthorizedNode)?;
+
+            Self::deposit_event(Event::RetireCertificateIssued {
+                node: node_account,
+                lock_until: lock_until_block,
+                when,
+            });
+
+            Ok(())
+        }
+
+        #[pallet::call_index(10)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn request_slash(
+            origin: OriginFor<T>,
+            node_account: T::AccountId,
+            slash_amount: u64,
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            let when = <frame_system::Pallet<T>>::block_number();
+
+            let mut info = AuthorizedOracleNodes::<T>::get(&node_account)
+                .ok_or(Error::<T>::UnauthorizedNode)?;
+
+            ensure!(
+                matches!(info.state,
+                    OracleNodeStakingState::ActiveStake | OracleNodeStakingState::RetireStake),
+                Error::<T>::InvalidNodeState
+            );
+            ensure!(
+                slash_amount < info.stake_amount,
+                Error::<T>::SlashAmountInvalid
+            );
+
+            SlashProposals::<T>::insert(&node_account, (slash_amount, who.clone(), when));
+            info.state = OracleNodeStakingState::SlashVoting;
+            AuthorizedOracleNodes::<T>::insert(&node_account, info);
+
+            Self::deposit_event(Event::SlashRequested {
+                node: node_account,
+                slash_amount,
+                initiated_by: who,
+                when,
+            });
+
+            Ok(())
+        }
+
+        #[pallet::call_index(11)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn vote_slash(
+            origin: OriginFor<T>,
+            node_account: T::AccountId,
+            vote: SlashVote,
+            admin_pubkey: [u8; 32],
+            admin_sig: [u8; 64],
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            let when = <frame_system::Pallet<T>>::block_number();
+
+            ensure!(who != node_account, Error::<T>::CannotVoteForSelf);
+
+            let info = AuthorizedOracleNodes::<T>::get(&node_account)
+                .ok_or(Error::<T>::UnauthorizedNode)?;
+            ensure!(
+                info.state == OracleNodeStakingState::SlashVoting,
+                Error::<T>::NoActiveSlash
+            );
+
+            // Verify admin key signature — same pattern as generate_staking_certificate.
+            // Verify admin key signature — same CBOR format as CLI encodeSlashVoteMessage:
+            // tag(121) + indefinite_array [ bytes(cardano_pkh_admin), uint(vote_index) ]
+            // vote_index: 0 = Approve, 1 = Deny
+            let approve = vote == SlashVote::Approve;
+            let vote_index: u64 = if approve { 0 } else { 1 };
+            let mut msg_buf = AllocVec::new();
+            let mut enc = Encoder::new(&mut msg_buf);
+            enc.tag(minicbor::data::Tag::new(121)).unwrap();
+            enc.begin_array().unwrap();
+            enc.bytes(&info.cardano_pkh_admin).unwrap();
+            enc.u64(vote_index).unwrap();
+            enc.end().unwrap();
+            let msg_hash = blake2_256(&msg_buf);
+            let public = sp_core::ed25519::Public::from_raw(admin_pubkey);
+            let sig = sp_core::ed25519::Signature::from_raw(admin_sig);
+            ensure!(
+                sp_io::crypto::ed25519_verify(&sig, &msg_hash, &public),
+                Error::<T>::InvalidAdminSignature
+            );
+
+            SlashVotes::<T>::insert(&node_account, &who, vote.clone());
+
+            Self::deposit_event(Event::SlashVoteCast {
+                node: node_account.clone(),
+                voter: who,
+                vote,
+                when,
+            });
+
+            // Auto-tally if threshold reached
+            Self::tally_slash_vote(&node_account)?;
+
+            Ok(())
+        }
+
+        #[pallet::call_index(12)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn generate_withdrawal_certificate(
+            origin: OriginFor<T>,
+            node_account: T::AccountId,
+            admin_pubkey: [u8; 32],
+            admin_sig: [u8; 64],
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            let when = <frame_system::Pallet<T>>::block_number();
+
+            // Cannot approve your own withdrawal
+            ensure!(who != node_account, Error::<T>::CannotVoteForSelf);
+
+            // Node must exist and be in a withdrawable state
+            let info = AuthorizedOracleNodes::<T>::get(&node_account)
+                .ok_or(Error::<T>::UnauthorizedNode)?;
+
+            ensure!(
+                info.state == OracleNodeStakingState::RetireStake
+                    || info.state == OracleNodeStakingState::SlashApproved,
+                Error::<T>::InvalidNodeState
+            );
+
+            // Derive approved_amount from vote result — no manual input needed.
+            // SlashApproved: penalty = stake - slash_amount.
+            // RetireStake: full release, no penalty.
+            let approved_amount = if info.state == OracleNodeStakingState::SlashApproved {
+                let (slash_amount, _, _) = SlashProposals::<T>::get(&node_account)
+                    .ok_or(Error::<T>::NoActiveSlash)?;
+                info.stake_amount.saturating_sub(slash_amount)
+            } else {
+                info.stake_amount
+            };
+
+            // Ensure this admin hasn't already signed
+            ensure!(
+                !WithdrawalApprovalSigs::<T>::contains_key(&node_account, &who),
+                Error::<T>::AlreadySigned
+            );
+
+            // Store this admin's signature
+            WithdrawalApprovalSigs::<T>::insert(&node_account, &who, (admin_pubkey, admin_sig));
+
+            // Count collected signatures
+            let sig_count = WithdrawalApprovalSigs::<T>::iter_prefix(&node_account).count() as u32;
+            let threshold = MinNodesForTrustedAggregation::<T>::get().unwrap_or(2);
+
+            if sig_count >= threshold {
+                // Collect all sigs into BoundedVec
+                let mut collected_sigs: BoundedVec<([u8; 32], [u8; 64]), ConstU32<32>> =
+                    BoundedVec::new();
+                for (_signer, sig_pair) in WithdrawalApprovalSigs::<T>::iter_prefix(&node_account) {
+                    let _ = collected_sigs.try_push(sig_pair);
+                }
+
+                // Clean up approval storage and slash proposal (if any)
+                let _ = WithdrawalApprovalSigs::<T>::clear_prefix(&node_account, u32::MAX, None);
+                SlashProposals::<T>::remove(&node_account);
+
+                // Persist issued certificate so bridge-offchain can query it
+                IssuedWithdrawalCerts::<T>::insert(
+                    &node_account,
+                    (approved_amount, collected_sigs.clone()),
+                );
+
+                Self::deposit_event(Event::WithdrawalCertificateIssued {
+                    node: node_account,
+                    approved_amount,
+                    sigs: collected_sigs,
+                    when,
+                });
+            } else {
+                Self::deposit_event(Event::WithdrawalApprovalSigned {
+                    node: node_account,
+                    signer: who,
+                    when,
+                });
+            }
+
+            Ok(())
+        }
+
+        #[pallet::call_index(13)]
+        #[pallet::weight((0, Pays::No))]
+        pub fn confirm_cardano_withdrawal(
+            origin: OriginFor<T>,
+            tx_hash: [u8; 32],
+            released_amount: u64,
+            penalty_amount: u64,
+        ) -> DispatchResult {
+            let who = ensure_signed(origin)?;
+            let when = <frame_system::Pallet<T>>::block_number();
+
+            let mut info = AuthorizedOracleNodes::<T>::get(&who)
+                .ok_or(Error::<T>::UnauthorizedNode)?;
+
+            ensure!(
+                released_amount + penalty_amount == info.stake_amount,
+                Error::<T>::AmountMismatch
+            );
+
+            info.state = OracleNodeStakingState::Inactive;
+            AuthorizedOracleNodes::<T>::insert(&who, info);
+
+            // Certificate has been used — clear it from queryable storage
+            IssuedWithdrawalCerts::<T>::remove(&who);
+
+            Self::deposit_event(Event::WithdrawalConfirmed {
+                node: who,
+                tx_hash,
+                released_amount,
+                penalty_amount,
+                when,
+            });
+
+            Ok(())
+        }
+
     }
 
     /// pallet auxiliary methods
@@ -874,5 +1603,86 @@ impl<T: Config> Pallet<T> {
             rewards: BoundedVec::truncate_from(this_rewards.into_iter().collect()),
             reward_asset,
         }
+    }
+
+    // ==================== STAKING HELPERS ====================
+
+    fn tally_slash_vote(node_account: &T::AccountId) -> DispatchResult {
+        let total_nodes = AuthorizedOracleNodes::<T>::iter().count() as u32;
+        let votes: Vec<SlashVote> = SlashVotes::<T>::iter_prefix(node_account)
+            .map(|(_, vote)| vote)
+            .collect();
+
+        let approve_count = votes.iter().filter(|v| **v == SlashVote::Approve).count() as u32;
+        let deny_count = votes.iter().filter(|v| **v == SlashVote::Deny).count() as u32;
+        let threshold = (total_nodes + 1) / 2;  // Simple majority
+
+        // If threshold reached, finalize
+        if approve_count >= threshold {
+            Self::finalize_slash_approved(node_account, approve_count, deny_count)?;
+        } else if deny_count >= threshold {
+            Self::finalize_slash_rejected(node_account, approve_count, deny_count)?;
+        }
+
+        Ok(())
+    }
+
+    fn finalize_slash_approved(
+        node_account: &T::AccountId,
+        approve_count: u32,
+        deny_count: u32,
+    ) -> DispatchResult {
+        let when = <frame_system::Pallet<T>>::block_number();
+        let (slash_amount, _, _) = SlashProposals::<T>::get(node_account)
+            .ok_or(Error::<T>::NoActiveSlash)?;
+
+        let mut info = AuthorizedOracleNodes::<T>::get(node_account)
+            .ok_or(Error::<T>::UnauthorizedNode)?;
+
+        info.state = OracleNodeStakingState::SlashApproved;
+        AuthorizedOracleNodes::<T>::insert(node_account, info);
+
+        // Keep SlashProposals alive — generate_withdrawal_certificate reads slash_amount from it.
+        let _ = SlashVotes::<T>::clear_prefix(node_account, u32::MAX, None);
+
+        Self::deposit_event(Event::SlashApproved {
+            node: node_account.clone(),
+            slash_amount,
+            approve_count,
+            deny_count,
+            when,
+        });
+
+        Ok(())
+    }
+
+    fn finalize_slash_rejected(
+        node_account: &T::AccountId,
+        approve_count: u32,
+        deny_count: u32,
+    ) -> DispatchResult {
+        let when = <frame_system::Pallet<T>>::block_number();
+
+        let mut info = AuthorizedOracleNodes::<T>::get(node_account)
+            .ok_or(Error::<T>::UnauthorizedNode)?;
+
+        // Restore state to RetireStake — slash only happens after request-retire,
+        // so the node was in RetireStake before SlashVoting.
+        if info.state == OracleNodeStakingState::SlashVoting {
+            info.state = OracleNodeStakingState::RetireStake;
+        }
+        AuthorizedOracleNodes::<T>::insert(node_account, info);
+
+        SlashProposals::<T>::remove(node_account);
+        let _ = SlashVotes::<T>::clear_prefix(node_account, u32::MAX, None);
+
+        Self::deposit_event(Event::SlashRejected {
+            node: node_account.clone(),
+            approve_count,
+            deny_count,
+            when,
+        });
+
+        Ok(())
     }
 }
