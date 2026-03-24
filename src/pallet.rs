@@ -474,6 +474,8 @@ pub mod pallet {
         ProposalMismatch,
         /// This account has already signed this proposal
         AlreadySigned,
+        /// Admin signature is invalid
+        InvalidAdminSignature,
     }
 
     #[derive(
@@ -1062,25 +1064,40 @@ pub mod pallet {
             origin: OriginFor<T>,
             node_account: T::AccountId,
             vote: SlashVote,
+            admin_pubkey: [u8; 32],
+            admin_sig: [u8; 64],
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
             let when = <frame_system::Pallet<T>>::block_number();
 
-            ensure!(
-                AuthorizedOracleNodes::<T>::contains_key(&who),
-                Error::<T>::UnauthorizedNode
-            );
-
-            ensure!(
-                who != node_account,
-                Error::<T>::CannotVoteForSelf
-            );
+            ensure!(who != node_account, Error::<T>::CannotVoteForSelf);
 
             let info = AuthorizedOracleNodes::<T>::get(&node_account)
                 .ok_or(Error::<T>::UnauthorizedNode)?;
             ensure!(
                 info.state == OracleNodeStakingState::SlashVoting,
                 Error::<T>::NoActiveSlash
+            );
+
+            // Verify admin key signature — same pattern as generate_staking_certificate.
+            // Verify admin key signature — same CBOR format as CLI encodeSlashVoteMessage:
+            // tag(121) + indefinite_array [ bytes(cardano_pkh_admin), uint(vote_index) ]
+            // vote_index: 0 = Approve, 1 = Deny
+            let approve = vote == SlashVote::Approve;
+            let vote_index: u64 = if approve { 0 } else { 1 };
+            let mut msg_buf = AllocVec::new();
+            let mut enc = Encoder::new(&mut msg_buf);
+            enc.tag(minicbor::data::Tag::new(121)).unwrap();
+            enc.begin_array().unwrap();
+            enc.bytes(&info.cardano_pkh_admin).unwrap();
+            enc.u64(vote_index).unwrap();
+            enc.end().unwrap();
+            let msg_hash = blake2_256(&msg_buf);
+            let public = sp_core::ed25519::Public::from_raw(admin_pubkey);
+            let sig = sp_core::ed25519::Signature::from_raw(admin_sig);
+            ensure!(
+                sp_io::crypto::ed25519_verify(&sig, &msg_hash, &public),
+                Error::<T>::InvalidAdminSignature
             );
 
             SlashVotes::<T>::insert(&node_account, &who, vote.clone());
@@ -1103,7 +1120,6 @@ pub mod pallet {
         pub fn generate_withdrawal_certificate(
             origin: OriginFor<T>,
             node_account: T::AccountId,
-            approved_amount: u64,
             admin_pubkey: [u8; 32],
             admin_sig: [u8; 64],
         ) -> DispatchResult {
@@ -1113,25 +1129,26 @@ pub mod pallet {
             // Cannot approve your own withdrawal
             ensure!(who != node_account, Error::<T>::CannotVoteForSelf);
 
-            // Node must exist
+            // Node must exist and be in a withdrawable state
             let info = AuthorizedOracleNodes::<T>::get(&node_account)
                 .ok_or(Error::<T>::UnauthorizedNode)?;
 
             ensure!(
-                approved_amount <= info.stake_amount,
-                Error::<T>::ApprovedAmountInvalid
+                info.state == OracleNodeStakingState::RetireStake
+                    || info.state == OracleNodeStakingState::SlashApproved,
+                Error::<T>::InvalidNodeState
             );
 
-            // If a proposal already exists, verify params match
-            if let Some(existing_amount) = WithdrawalApprovalInfo::<T>::get(&node_account) {
-                ensure!(
-                    existing_amount == approved_amount,
-                    Error::<T>::ProposalMismatch
-                );
+            // Derive approved_amount from vote result — no manual input needed.
+            // SlashApproved: penalty = stake - slash_amount.
+            // RetireStake: full release, no penalty.
+            let approved_amount = if info.state == OracleNodeStakingState::SlashApproved {
+                let (slash_amount, _, _) = SlashProposals::<T>::get(&node_account)
+                    .ok_or(Error::<T>::NoActiveSlash)?;
+                info.stake_amount.saturating_sub(slash_amount)
             } else {
-                // First signer — create the proposal
-                WithdrawalApprovalInfo::<T>::insert(&node_account, approved_amount);
-            }
+                info.stake_amount
+            };
 
             // Ensure this admin hasn't already signed
             ensure!(
@@ -1154,9 +1171,9 @@ pub mod pallet {
                     let _ = collected_sigs.try_push(sig_pair);
                 }
 
-                // Clean up approval storage
-                WithdrawalApprovalInfo::<T>::remove(&node_account);
+                // Clean up approval storage and slash proposal (if any)
                 let _ = WithdrawalApprovalSigs::<T>::clear_prefix(&node_account, u32::MAX, None);
+                SlashProposals::<T>::remove(&node_account);
 
                 // Persist issued certificate so bridge-offchain can query it
                 IssuedWithdrawalCerts::<T>::insert(
@@ -1625,7 +1642,7 @@ impl<T: Config> Pallet<T> {
         info.state = OracleNodeStakingState::SlashApproved;
         AuthorizedOracleNodes::<T>::insert(node_account, info);
 
-        SlashProposals::<T>::remove(node_account);
+        // Keep SlashProposals alive — generate_withdrawal_certificate reads slash_amount from it.
         let _ = SlashVotes::<T>::clear_prefix(node_account, u32::MAX, None);
 
         Self::deposit_event(Event::SlashApproved {
